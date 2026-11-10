@@ -5,7 +5,7 @@
 | 入口 | 验证范围 |
 | --- | --- |
 | `scripts/simulator-smoke.sh` | 保留自 GitHub 基线。编译、安装并启动精简夹具，检查 SwiftUI 首屏的 `onAppear` 写出本次运行专属的标记。 |
-| `scripts/apple-simulator-test.sh` | 源自 v0.4。用 XcodeGen 生成工程，在原生 iPhone Simulator 上运行两项 XCUITest。检查同名联系人有不同标识，并从“小明”聊天输入和发送测试文本，读取聊天记录。 |
+| `scripts/apple-simulator-test.sh` | 源自 v0.4。用 XcodeGen 生成工程，在原生 iPhone Simulator 上运行三项 XCUITest。合成夹具包含两个测试 App 场景：私信（对标 WhatsApp，检查同名联系人标识、输入发送并读回）与信息流（对标 X，撰写、发布并读回）。均为自有合成界面与合成数据，不使用真实第三方 App 或账号。 |
 
 ## 前置条件与运行方式
 

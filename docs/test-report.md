@@ -29,7 +29,9 @@
 | simctl Driver 直调 | `AppleSimulatorDriver.status()` 正确返回 Booted 的 iPhone 18 Pro。`open_app("fixture")` 启动夹具成功。`observe()` 截图成功并返回本地路径与 SHA-256。 |
 | 修复记录 | 首次运行因 XcodeGen 2.46.0 + Xcode 27 生成的工程缺少 `PRODUCT_NAME` 而构建失败（"Multiple commands produce '.app'"）。在 `simulator/project.yml` 的 `settings.base` 显式加 `PRODUCT_NAME: $(TARGET_NAME)` 后通过。 |
 
-Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 的结论已沉淀，后续 GitHub Actions 的 macOS runner 同样适用。Hark、真机与真实微信仍未验证，本节结论只覆盖 Simulator 与 simctl Driver 能力。
+Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_PATHS: NO`，后续 GitHub Actions 的 macOS runner 同样适用。Hark、真机与真实第三方 App 仍未验证，本节结论只覆盖 Simulator 与 simctl Driver 能力。
+
+追加验证（同日）：夹具扩展为两个合成测试 App 场景，私信对标 WhatsApp（联系人、草稿、发送、回读），信息流对标 X（撰写、发布、回读）。在 Xcode 27.2 / iPhone 18 Pro（iOS 27.2）重跑 `scripts/apple-simulator-test.sh`，`Executed 3 tests, with 0 failures`，`APPLE SIMULATOR XCTEST PASS`，构建日志中 headermap 警告 0 条。两个场景均为自有界面与合成数据，未安装或操作真实第三方 App、未使用真实账号。
 
 ## 2026-11-10 晚间补充 · Xcode 官方 MCP 探测
 
