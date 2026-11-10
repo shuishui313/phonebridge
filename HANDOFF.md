@@ -44,7 +44,7 @@ PhoneBridge 应使 AI Agent 能够：
 7. 对发送消息等敏感操作进行独立用户审批。
 8. 返回最终执行结果、失败原因和必要的操作记录。
 
-**产品定位不是重新开发一个聊天 App，而是为不同 AI Agent 提供统一的手机控制能力。**
+**产品定位不是重新开发一个聊天 App，而是提供统一的手机操作能力。产品分两种形态：供 Hark、ChatGPT 等 Agent App 直接接入的 MCP 服务，以及自带对话入口的独立 App。两形态共享同一核心，详见 [产品需求](docs/product-requirements.md)。**
 
 首期只开发 iPhone，不开发 Android。
 
