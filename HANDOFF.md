@@ -1,17 +1,25 @@
 # PhoneBridge — 项目总方案与开发交接（HANDOFF）
 
-## 当前接手点（2026-11-10）
+## 当前接手点（2026-11-10 收工，明日继续）
 
 v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0.4 使用 `python3 -m phonebridge.cli` 或安装后的 `phonebridge`，v0.3 保留原命令和协议，v0.2 可独立重跑。Python、MCP、审批、SwiftUI、XCUITest 与 XcodeGen 源码均在仓库。原始归档和每个成员的 SHA-256 见 [资产清单](docs/artifact-inventory.md)。
 
 本次重跑的结果与未验证项见 [测试报告](docs/test-report.md)。当前测试目标 App 为自有合成夹具中的私信与信息流场景（对标 WhatsApp 与 X 的交互形态），v0.4 工具名已通用化为 `contacts_list` / `contacts_open` / `message_prepare`，旧名保留为可调用别名；正文和附录中提及「微信」或 `wechat_*` 的地方均为历史快照描述。[产品需求](docs/product-requirements.md) · [安全边界](docs/security.md)
 
-### 下一阶段
+### 今日收工状态
 
-1. 步骤 0a、0b、1、2 均已完成并实测，G1 通过。步骤 2 交付：`SubmissionLedger` 脱敏持久化状态、`SubmissionGate` 唯一提交入口（派发状态在设备调用前 `fsync`）、审批端点的令牌与独立 UID 对端凭据隔离、提交前中断／回执丢失／并发／重启／绕行回归，见 [测试报告](docs/test-report.md)。下一步按步骤 3 做 Hark 经 SSH 的完整联调：连通、成功、失败、中断记录与重连防重。 [实现计划](docs/implementation-plan.md)
-2. 可写联调与真机阶段必须用 `--require-approval-isolation` 启动，配置 `--approval-token-env` 或 `--approval-uid`，并指定 `--submission-state`；未配置隔离时只是 Mock 演示模式，`phone_status` 的 `submissions.approval_isolated` 为 `false`。提交结果不明确时先回读，仍无法判定就暂停，禁止自动重发。 [安全边界](docs/security.md)
-3. Hark 经 SSH 的连通性可先用 Mock 验证，通道 A 可并行验证自有 App 的无副作用意图。步骤 2 通过后再执行步骤 3 的完整 Hark 联调，覆盖审批、回读和重连防重。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
-4. G3a 经用户另行授权后开始真机只读取证。G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入。目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付操作默认禁用。 [iOS 可行性](docs/ios-feasibility.md) · [实现计划](docs/implementation-plan.md)
+- `main` 最新提交为 `fd65db6`（同事的 review 记录 `docs/reviews/711ab2a.md`），代码基线为 `711ab2a`（步骤 2）。今日先后交付 `9793497`（0a 驱动准入）、`f103532`（0b 拟稿试跑 / G1）、`55b8a9f`（1 核心稳定化）、`711ab2a`（2 逐笔审批与恢复）。工作区干净，改动全部已推送。
+- 今日验证基线：Python 138 项、v0.2 归档 10 项、XCUITest 4 项全过；`scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`；真实 stdio 端到端验证隔离审批、单次提交、重放拒绝、重启恢复与台账脱敏；lints 与 `git diff --check` 干净。
+- **同事 review 结论**：`docs/reviews/711ab2a.md` 的 5 条发现（4 项 P1、1 项 P2）已逐条对照代码核实，**全部成立、无误报、不需要反驳**。待修项为 P1-1 真实驱动缺少提交前拦截（`CoreAPI` 的绕行检测依赖 `messages` 字段，Xcode 驱动返回层级路径，整段恒不执行）、P1-2 恢复只比正文摘要且未用收件人、无记录增量归属（会把其他联系人或历史的同文记录误判为完成）、P1-3 结果不明时 `pause` 只在响应里、下一次写入仍成功、P1-4 `--approval-uid` 要求的不同 UID 与 0700 目录 / 0600 套接字互斥、独立账号默认连不上、P2-5 审批先改内存后落盘，写盘失败仍可派发。
+- **明天先对齐再动工**：本轮只做了评估，**没有改源码、没有写回复记录、没有撤回任何标注**。以下 4 个决策点未定：步骤 2「已完成」标注是否撤回或降级及 G2 排期；真实驱动下恢复证据能否归属到操作、还是一律暂停人工核验；暂停的范围与可信侧解除机制；`--approval-uid` 的架构选择（独立 UID 托管端点 / token 降级 / 外部审批设备）。另有两点主动提出：P2-5 建议升为 P1，且与 P1-2 同根因（内存是事实来源、台账只是旁记），应统一改为「台账为唯一事实来源」；`CoreAPI._verify()` 只要含任一证据键就判 `clear`，定义「完成回读核验」时须一起收紧。
+
+### 下一阶段（明日开工顺序）
+
+1. **先对齐决策，不要直接打补丁。** 与同事确认上述 4 个决策点，尤其是步骤 2 完成标注与 G2 排期：实现计划第 2 行标「已完成」，但验收判据含「拒绝通用交互绕行」，真实驱动下并未覆盖；本文原先写的「下一步步骤 3 Hark 联调」暂时挂起，Hark 完整联调按 G2 要求排在审批与恢复测试通过之后，Mock 连通性试跑可并行。 [评审记录](docs/reviews/711ab2a.md) · [实现计划](docs/implementation-plan.md)
+2. **一次性修复，避免返工。** 按「台账为唯一事实来源」统一改 `core.approve`、`SubmissionGate.execute` 与 `submission_evidence`：审批先落盘再改内存、派发前 replay 确认 `approved` 事件存在、恢复按收件人与记录增量归属而非同文匹配；补真实驱动提交前拦截（复用 0a 的层级解析，拒绝点击提交类控件，而不是事后数记录）；给 `CoreAPI` 加真正的暂停状态与可信侧 `resume_after_readback()`，只读放行且解除须绑定一次成功的当次回读核验；隔离表述降级，不把 demo 模式说成已隔离。全部补反例回归，尤其同事用合成数据复现的「其他联系人同文旧记录」与「写盘失败仍派发」。
+3. **修完再更新文档**：撤回或降级实现计划步骤 2 的完成标注，把真实驱动提交前拦截明确列为 G2 阻塞项，测试报告补修复证据；G1 拆成「自动化脚本通过 / 隔离 Codex 会话自然语言复核待办」两行，后者仍未做。 [测试报告](docs/test-report.md)
+4. **之后才进入步骤 3**：Hark 经 SSH 的连通、成功、失败、中断记录与重连防重；通道 A 可并行验证自有 App 的无副作用意图。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
+5. **边界不变**：可写联调与真机阶段必须用 `--require-approval-isolation` 启动，配置令牌或独立 UID 并指定 `--submission-state`；未配置隔离只是 Mock 演示模式，同账号下可自由执行 shell 的 Agent 仍可能自批。提交结果不明确时先回读，仍无法判定就暂停，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App 与 Hark 完整联调均未验证。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md) · [实现计划](docs/implementation-plan.md)
 
 
 **项目名称：** PhoneBridge  
