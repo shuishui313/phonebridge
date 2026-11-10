@@ -1,5 +1,19 @@
 # PhoneBridge — 项目总方案与开发交接（HANDOFF）
 
+## 当前接手点（2026-11-10）
+
+v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0.4 使用 `python3 -m phonebridge.cli` 或安装后的 `phonebridge`，v0.3 保留原命令和协议，v0.2 可独立重跑。Python、MCP、审批、SwiftUI、XCUITest 与 XcodeGen 源码均在仓库。原始归档和每个成员的 SHA-256 见 [资产清单](docs/artifact-inventory.md)。
+
+本次重跑的结果与未验证项见 [测试报告](docs/test-report.md)。以下正文保留原产品方案和历史快照，其中 v0.4 未取得、未合并的说法描述的是当时的状态。
+
+### 下一阶段
+
+1. 先从 [测试报告](docs/test-report.md) 核对 Apple Simulator 的最新证据。用自有测试 App 验证启动、选中测试联系人、输入和回读。若需 MCP 驱动界面交互，另建基于 XCUITest 的受控会话桥，沿用同一审批和验证条件。
+2. 在受控主机上用 Hark 经 SSH 打开 Codex，按 [Hark 接入步骤](docs/hark-codex.md) 跑一次合成任务。分别验证连接中断、结果回读和重连后的防重。
+3. 上层 Agent 补齐任务时限、动作预算、有限重试和断线恢复。只重试已确认无副作用的动作。执行结果不明确时，先回读，再决定是否停止。实际设备接入前将审批移至 Agent 无法访问的独立通道。
+4. 真机、真实第三方 App 和本机运行仍是独立的可行性阶段。仅在用户另行决定后进入真机验证，保持金融与支付操作默认禁用。[iOS 可行性](docs/ios-feasibility.md)
+
+
 **项目名称：** PhoneBridge  
 **GitHub：** https://github.com/shuishui313/phonebridge  
 **文档日期：** 2026-11-10  

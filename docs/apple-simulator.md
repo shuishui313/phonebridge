@@ -1,30 +1,37 @@
-# Apple iOS Simulator smoke test
+# Apple iPhone Simulator 测试
 
-The smoke test builds the project's SwiftUI fixture, installs and launches it in an explicitly selected iPhone Simulator, and checks that its first view reaches SwiftUI's `onAppear` callback. The view writes a fresh marker for each run so an earlier launch cannot satisfy the check. The fixture runs independently of the MCP server and the local phone simulation.
+仓库有两个独立的原生测试入口。两者都使用自有 SwiftUI App 和合成数据。
 
-## Set up Xcode
+| 入口 | 验证范围 |
+| --- | --- |
+| `scripts/simulator-smoke.sh` | 保留自 GitHub 基线。编译、安装并启动精简夹具，检查 SwiftUI 首屏的 `onAppear` 写出本次运行专属的标记。 |
+| `scripts/apple-simulator-test.sh` | 源自 v0.4。用 XcodeGen 生成工程，在原生 iPhone Simulator 上运行两项 XCUITest。检查同名联系人有不同标识，并从“小明”聊天输入和发送测试文本，读取聊天记录。 |
 
-1. Install and open full Xcode on macOS. Select it in Xcode → Settings → Locations → Command Line Tools. Complete the first-launch setup.
-2. In Xcode → Settings → Components, install iOS platform support and an iOS Simulator runtime (iOS 16 or later). Add an iPhone in Xcode's Devices and Simulators window if needed. [Apple's Xcode components guide](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)
-3. In Terminal, check the selected developer directory and list available devices. [Apple's command-line tool reference](https://developer.apple.com/documentation/xcode/xcode-command-line-tool-reference)
+## 前置条件与运行方式
 
-   ```sh
-   xcode-select -p
-   xcrun --find simctl
-   xcrun simctl list devices available
-   ```
-
-## Run the smoke test
-
-From the repository root, replace the placeholder with the UDID of the chosen iPhone. Skip `boot` if it is already booted.
+在 macOS 安装并选中完整 Xcode，完成初次启动设置，安装 iOS 27 Simulator runtime 并创建一台 iPhone Simulator。安装 [XcodeGen](https://github.com/yonaskolb/XcodeGen) 后，从仓库根目录运行以下命令。
 
 ```sh
-SIM_UDID='replace-with-iphone-simulator-udid'
-xcrun simctl boot "$SIM_UDID"
-xcrun simctl bootstatus "$SIM_UDID"
+./scripts/simctl-preflight.sh
+SIM_UDID='替换为可用的 iOS 27 iPhone Simulator UDID'
+xcrun simctl bootstatus "$SIM_UDID" -b
 ./scripts/simulator-smoke.sh "$SIM_UDID"
+./scripts/apple-simulator-test.sh "$SIM_UDID"
 ```
 
-Record the `PASS` line, the iPhone model, the iOS runtime, and `xcodebuild -version` when reporting a completed run. For a visual check, capture the fixture screen with `xcrun simctl io "$SIM_UDID" screenshot phonebridge-fixture.png` and confirm it shows “PhoneBridge” and “Simulator fixture ready”. [Apple's Simulator screenshot guide](https://developer.apple.com/library/archive/documentation/IDEs/Conceptual/iOS_Simulator_Guide/InteractingwiththeiOSSimulator/InteractingwiththeiOSSimulator.html)
+本地运行 UI 测试会在 `build/ios-ui.*` 下生成工程、DerivedData 和 `PhoneBridgeUITests.xcresult`。每次运行使用独立目录，可在 Xcode 打开结果包检查实际的测试数量和失败详情。记录 Xcode 版本、模拟器型号、iOS runtime 和通过／失败／跳过数量。可从 GitHub Actions 的 **Apple Simulator** 工作流手动重跑，并在日志里查看原生文件变更后自动运行的结果。
 
-This result covers the fixture's build, installation, launch, and first view lifecycle on the selected Simulator. Keep local simulation results, Apple Simulator smoke results, and physical iPhone results as separate entries in the test report. Testing MCP-driven iOS behavior would require a bridge to the Simulator fixture.
+## 受限 simctl MCP Driver
+
+先将 `PhoneBridgeFixture.app` 安装到选定的 Simulator。可在上面的 `build/ios-ui.*/DerivedData/Build/Products/Debug-iphonesimulator/` 目录中取得 App。使用 v0.4 的 MCP 入口启动服务。
+
+```sh
+python3 -m phonebridge.cli --driver simctl --sim-udid "$SIM_UDID" serve
+```
+
+- `phone_status` 查看选定 Simulator 的状态。
+- `phone_open_app(app="fixture")` 启动已安装的夹具 `org.example.phonebridge.fixture`。
+- `phone_inspect` 将截图保存在宿主机的本地临时文件中，返回路径和 SHA-256。
+- 点击、滑动、输入、打开真实微信或发送真实消息超出 simctl Driver 的能力，工具会返回对应错误。
+
+XCUITest 直接操作自有 App，模拟发送发生在 App 的内存里。当前 MCP 到 simctl 的路径限于状态、启动和截图。两条路径的结果分别记录在 [测试报告](test-report.md)。系统权限边界见 [iPhone 与 iOS 27 可行性](ios-feasibility.md)。

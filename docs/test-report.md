@@ -1,20 +1,39 @@
-# PhoneBridge 0.3.0 验证报告
+# PhoneBridge 验证报告
 
-验证日期为 2026-11-10（香港时间）。环境为 macOS、Python 3.10.10 和 Codex CLI 0.167.0-alpha.3.2。
+2026 年 11 月 10 日（香港时间）。本机为 macOS 27.0.1（26A434）、arm64、Python 3.10.10、Codex CLI 0.167.0-alpha.3.2，已安装 Xcode Command Line Tools。Python 套接字测试使用允许本机 Unix 域套接字的执行环境。
 
-| 验证范围 | 结果 | 实际验证内容 |
-| --- | --- | --- |
-| Python 虚拟手机 | 通过 10 项 | 主屏幕、应用导航、页面状态校验、联系人精确匹配和重名消歧。验证审批、拒绝、状态变化后提案失效、重复执行、并发执行和聊天记录隔离。 |
-| MCP 和本机审批通道 | 通过 8 项 | 实际子进程通过 stdio 初始化和发现工具，覆盖 4 个握手协议版本。验证参数、工具范围、套接字权限、状态变更和审批后的模拟发送。 |
-| 本机 Codex 连接 | 通过 | 使用隔离的 Codex app-server 会话发现 8 个工具，从主屏幕进入模拟微信，通过独立审批命令批准提案，再经 MCP 写入并读回一条模拟消息。 |
-| Apple Simulator | 未运行 | 本机选中的是 Command Line Tools，`xcrun --find simctl` 无法找到 `simctl`。已检查脚本语法、Swift 源码解析和缺少工具时的错误提示。 |
-| 实体 iPhone | 未运行 | 当前项目仅包含 Python 模拟后端和独立的 Apple Simulator 测试应用。 |
-| Hark | 未运行 | 已记录通过同一主机上的 Codex 会话接入的方式，尚无 Hark 客户端实测结果。 |
+| 验证范围 | 实际结果 |
+| --- | --- |
+| 原 GitHub 基线 `4ff8df5` | 18 通过，0 失败，0 跳过。 |
+| v0.4 原始 ZIP 独立解压 | 52 通过，0 失败，0 跳过。包含独立进程审批与模拟发送回读。 |
+| 整合后的 Python 套件 | 79 通过，0 失败，0 跳过。其中 18 项为 v0.3 兼容回归，61 项为 v0.4。涵盖过期、拒绝、并发防重、MCP 错误恢复、审计、假 `simctl` 和实际 stdio 子进程。 |
+| v0.2 原始源码 | 10 通过，0 失败，0 跳过。离线演示四步完成，回报 `simulated: true`、`message_sent: false`。 |
+| v0.2 FastMCP 进程 | MCP Python SDK 1.30.0 发现 8 个工具。完成导航、手势、草稿与确认，原型返回 `blocked`，重放被拒绝。 |
+| 打包和 CLI | `python3 -m pip install .` 构建并安装 0.4.0 wheel。在仓库外执行 `phonebridge --help` 成功。 |
+| 本机 Codex MCP | 用隔离的 `codex app-server` 会话直接调用。v0.3 发现 8 项、v0.4 发现 12 项。两版均经独立审批终端写入并回读一条模拟消息。这次验证覆盖客户端和工具调用，Hark 和自然语言模型回合另行验收。 |
+| 本机 Swift／脚本检查 | 两代 SwiftUI 与 v0.4 XCTest 的 3 份 Swift 文件通过解析，3 份 Shell 脚本通过 Bash 语法检查。本机 `xcodebuild -version` 与 `xcrun --find simctl` 未找到完整 Xcode 所需工具，本机未运行官方 Simulator 或 XCUITest。 |
+| GitHub Actions | 配置 Linux Python 与 Xcode 27 Simulator 测试工作流。本地通过 YAML 解析，远端运行记录见仓库 Actions。 |
+| Hark、真机与真实微信 | 未运行。本次验证未连接实体 iPhone 或真实微信。 |
 
-在仓库根目录重跑 18 项自动化测试：
+## 重跑自动测试
+
+从仓库根目录运行。
 
 ```sh
 python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -p 'test_subprocess.py' -v
+python3 -m unittest discover -s legacy/v0.2 -v
+python3 legacy/v0.2/demo.py
+
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/phonebridge --help
+.venv/bin/python -m pip install -r legacy/requirements-v0.2.txt
+.venv/bin/python legacy/smoke_mcp_v02.py
 ```
 
-在安装完整 Xcode 和 iOS 运行时的 Mac 上，可按 [Apple Simulator 验证步骤](apple-simulator.md) 单独构建、安装和启动 SwiftUI 测试应用。该流程的结果仅覆盖测试应用启动和首屏生命周期。
+原始 ZIP 可按 [资产清单](artifact-inventory.md) 核对 SHA-256。分别在安全解压后的 v0.4 目录和干净的 `4ff8df5` 检出中运行 `python3 -m unittest discover -s tests -v` 可重跑两条历史基线。
+
+v0.4 的进程测试通过真实 stdio 发现工具，从 Mock 的小明聊天生成提案，确认审批前执行被拒绝。再经独立 CLI 批准、写入一次并拒绝重放，回读同一聊天只有一条匹配记录。另一项测试省略审批套接字并确认全程没有写入记录。相同工作流的 Codex 手动复验步骤见 [README](../README.md)。
+
+`tests/test_simctl.py` 的九项使用注入的进程替身验证驱动契约，包括模拟器设备枚举、夹具启动、截图权限与失败清理。使用完整 Xcode 的独立 SwiftUI 和 XCUITest 验证见 [Apple Simulator 步骤](apple-simulator.md)。

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phonebridge-agent"
+version = "0.4.0"
+description = "Independent MCP bridge for synthetic iPhone workflow testing and limited Apple Simulator diagnostics"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+authors = [{name = "PhoneBridge contributors"}]
+
+[project.scripts]
+phonebridge = "phonebridge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["phonebridge*"]

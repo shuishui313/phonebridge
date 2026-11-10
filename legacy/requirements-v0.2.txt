@@ -1,0 +1,2 @@
+# The recovered server imports FastMCP at the MCP Python SDK 1.x path.
+mcp==1.30.0

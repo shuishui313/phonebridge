@@ -1,0 +1,44 @@
+{
+  "ok": true,
+  "simulated": true,
+  "real_device_connected": false,
+  "message_sent": false,
+  "human_confirmation_required": true,
+  "steps": [
+    {
+      "step": "device_status",
+      "result": {
+        "ok": true,
+        "driver": "mock",
+        "device": "simulated iPhone",
+        "real_device_connected": false
+      }
+    },
+    {
+      "step": "open_wechat",
+      "result": {
+        "ok": true,
+        "simulated": true,
+        "app": "WeChat"
+      }
+    },
+    {
+      "step": "observe_wechat",
+      "result": {
+        "ok": true,
+        "app": "WeChat",
+        "screen_description": "Mock screen: WeChat",
+        "screenshot": null
+      }
+    },
+    {
+      "step": "prepare_message",
+      "result": {
+        "ok": true,
+        "recipient": "测试联系人",
+        "message": "今晚八点到",
+        "state": "awaiting_external_confirmation"
+      }
+    }
+  ]
+}
