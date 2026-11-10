@@ -8,6 +8,31 @@ PhoneBridge 第一阶段以 iPhone 和 iOS 27 为目标。测试目标分三层�
 | Apple iPhone Simulator | 在 Apple 的 iOS 运行时验证自有 SwiftUI 测试 App 和受控 UI 流程 | 仓库提供独立 SwiftUI 启动检查及两项 XCUITest。MCP 另有受限 simctl Driver，支持状态、夹具启动和本地截图。 |
 | 物理 iPhone | 在用户决定测试后，验证自有 App 和明确公开的系统或合作方能力 | 当前没有真机 Driver 或真机测试结果。 |
 
+## 两种第三方 App 支持方式（双通道策略）
+
+产品需求包含两种互补的第三方 App 操作方式，PhoneBridge 用同一驱动抽象承载，不互斥：
+
+| 通道 | 方式 | 典型场景 | 依赖 | 边界 |
+| --- | --- | --- | --- | --- |
+| A · 意图通道 | App Intents / 快捷指令，调用系统或 App 显式公开的动作 | 「给妈妈发短信说我不回家吃饭」→ 系统「发送信息」动作 | 本机即可运行；Mac 上可用 `shortcuts run` 触发 | 只能做被公开的动作；微信等 App 几乎不公开此类接口，未验证 |
+| B · 设备接管通道 | 参考 Mika 的通用 UI 接管：观察屏幕 → 合成点击/滑动/输入 → 回读验证 | 操作任意 App 的任意界面 | iOS 27+ 可走 Xcode 官方 mcpbridge / Device Hub 协议；iOS 17.4–26 社区用 WebDriverAgent 自签 Helper | 需 USB 配对、开发者模式等设置；真机阶段另行授权 |
+
+路由原则：能用 A 就不用 B（更稳、更快、不依赖 UI 变化）；A 不可用时才走 B。两条通道统一经过 PhoneBridge 的审批、验证、预算与审计层，Agent 入口不变。
+
+### 参考项目调研结论（2026-11-10，仅阅读公开文档，未复制代码）
+
+| 项目 | 平台与路线 | 对 PhoneBridge 的参考价值 | 许可证约束 |
+| --- | --- | --- | --- |
+| [Mika](https://github.com/wangzan101/Mika) | 仅 Android：无障碍服务 + 无线调试 + 虚拟后台屏操作任意 App | 交互范式参考（后台屏不打扰用户、Ask/Autonomous 审批模式）；无 iOS 技术可迁移 | Apache-2.0 |
+| [Poki](https://github.com/JosssphZhou/poki) | 真 iPhone 无越狱：USB 配对 + 开发者模式 + 开发者服务通道；自签 App（免费账号 7 天续签）；本机 VPN 回环让控制服务在手机上运行，可脱离 Mac | 证明「真机任意 App 控制」与「本机运行」在无越狱条件下存在可行路径 | AGPL-3.0，禁止代码级参考，只读文档 |
+| [Pinky](https://github.com/DIYgod/pinky) | pre-alpha；iOS 27+ 用 Device Hub 协议无需 Helper，iOS 17.4–26 用 WebDriverAgent 自签；网关强制执行审批策略 | 通道 B 的工程约束清单（USB 信任、镜像挂载、银行 App 检测、Agent 绕过风险） | Apache-2.0 |
+
+上述能力均来自各项目 README 的声明，PhoneBridge 未独立复现，不构成本仓库的验证证据。
+
+### 对既有结论的修正
+
+此前「普通 App 无法控制其他 App」的判断只覆盖「iPhone 上普通 App 作为控制器」的场景。Poki/Pinky 的公开文档表明，经 Apple 开发者通道从外部驱动真机是另一条路径，不需要越狱，也不违反本项目的安全约定（不绕过系统安全保护，使用开发者模式与自签等 Apple 支持的机制）。代价是设备设置门槛、自签续期、第三方 App 服务条款风险和部分 App 的环境检测。Xcode 27 官方 mcpbridge 与 Pinky 使用的 Device Hub 协议同源，意味着通道 B 在 iOS 27 上可能存在官方支持的入口，待探测验证。真机与真实第三方 App 的验证仍按用户另行授权执行。
+
 ## 第三方 App 的权限边界
 
 iOS 将第三方 App 隔离在各自的沙盒内。通过普通公开 API 安装的 PhoneBridge App 无法任意读取其他 App 的数据，也无法任意注入触控或读取它们的界面。当前模拟微信里的联系人、草稿和消息均为项目夹具。自有 App 或 Apple Simulator 中通过的测试无法证明真实微信具备相同能力。[Apple 平台安全指南](https://support.apple.com/en-sg/guide/security/sec15bfe098e/web)
