@@ -8,10 +8,10 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
-1. 按 [实现计划](docs/implementation-plan.md) 的步骤 0 执行最小试错：在开发用 Codex 会话注册 `--driver xcode-mcp`，验证经 MCP 的完整 `观察 → 规划 → 操作 → 回读` 闭环、独立审批和结果回读，并把证据写入 [测试报告](docs/test-report.md)。SwiftUI 启动、三项 XCUITest、simctl 诊断和官方 `XcodeMCPDriver` 均已实测；XCTest 桥保留为 CI 回归与回退方案。
-2. 在受控主机上用 Hark 经 SSH 打开 Codex，按 [Hark 接入步骤](docs/hark-codex.md) 跑一次合成任务。分别验证连接中断、结果回读和重连后的防重。
-3. 上层 Agent 补齐任务时限、动作预算、有限重试和断线恢复。只重试已确认无副作用的动作。执行结果不明确时，先回读，再决定是否停止。实际设备接入前将审批移至 Agent 无法访问的独立通道。
-4. 真机、真实第三方 App 和本机运行仍是独立的可行性阶段。仅在用户另行决定后进入真机验证，保持金融与支付操作默认禁用。[iOS 可行性](docs/ios-feasibility.md)
+1. 按步骤 0a 核验目标属于 Apple Simulator，把交互限制在自有夹具内，并为驱动调用加上超时和当次结果校验。通过后按步骤 0b 在开发用 Codex 会话中试跑拟稿，保持提交路径禁用，按稳定 ID 核对收件人并回读完整草稿。既有 SwiftUI 启动、三项 XCUITest、simctl 诊断和 `XcodeMCPDriver` 实测均保留为基线。 [实现计划](docs/implementation-plan.md) · [测试报告](docs/test-report.md)
+2. 步骤 1 补任务时限、动作预算和有限重试。步骤 2 验证独立审批、持久化防重及断线恢复。提交结果不明确时先回读，仍无法判定就暂停。 [实现计划](docs/implementation-plan.md)
+3. Hark 经 SSH 的连通性可先用 Mock 验证，通道 A 可并行验证自有 App 的无副作用意图。步骤 2 通过后再执行步骤 3 的完整 Hark 联调，覆盖审批、回读和重连防重。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
+4. G3a 经用户另行授权后开始真机只读取证。G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入。目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付操作默认禁用。 [iOS 可行性](docs/ios-feasibility.md) · [实现计划](docs/implementation-plan.md)
 
 
 **项目名称：** PhoneBridge  
