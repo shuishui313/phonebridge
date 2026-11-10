@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Callable
+from typing import Any
 
+from .api import ACTION_SPECS, CoreAPI
 from .core import PhoneBridge, valid_utf8
 from .drivers import fail
 from .mcp import VERSIONS, RpcError, read_message, rpc_error, write_message
@@ -53,6 +54,11 @@ DESCRIPTIONS = {
 
 NUMERIC = {"x", "y", "start_x", "start_y", "end_x", "end_y"}
 
+# Keep the advertised tool contract aligned with the stable internal API.
+if set(PARAMS) != set(ACTION_SPECS) or any(
+        set(PARAMS[name]) != set(ACTION_SPECS[name][1]) for name in PARAMS):
+    raise RuntimeError("MCP tool contract is out of sync with the core API")
+
 
 def _tool_schema(name: str) -> dict:
     fields = PARAMS[name]
@@ -62,8 +68,10 @@ def _tool_schema(name: str) -> dict:
 
 
 class MCPServer:
-    def __init__(self, bridge: PhoneBridge):
-        self.bridge = bridge
+    def __init__(self, bridge_or_api: PhoneBridge | CoreAPI):
+        # Accept a bare core for existing callers; thin shells pass a CoreAPI.
+        self.api = bridge_or_api if isinstance(bridge_or_api, CoreAPI) else CoreAPI(bridge_or_api)
+        self.bridge = self.api.bridge
         self.initialized = False
         self.version = None
 
@@ -82,15 +90,7 @@ class MCPServer:
                 return fail("invalid_parameter_type", parameter=key)
             elif not valid_utf8(value):
                 return fail("invalid_parameter_value", parameter=key)
-        b = self.bridge
-        table: dict[str, Callable] = {
-            "phone_status": b.status, "phone_inspect": b.inspect,
-            "phone_open_app": b.open_app, "phone_home": b.home, "phone_back": b.back,
-            "phone_tap": b.tap, "phone_swipe": b.swipe, "phone_type_text": b.type_text,
-            "contacts_list": b.list_contacts, "contacts_open": b.open_chat,
-            "message_prepare": b.prepare_message, "phone_execute_operation": b.execute,
-        }
-        return table[name](*[args[k] for k in PARAMS[name]])
+        return self.api.dispatch(name, args)
 
     def process(self, data: Any) -> dict | None:
         request_id = None

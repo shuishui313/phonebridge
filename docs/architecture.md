@@ -7,7 +7,8 @@ flowchart TD
   Hark[Hark] -->|SSH| Agent[Codex 或其他 Agent]
   Agent -->|stdio MCP| MCP[工具清单、参数校验与调用]
   Operator[用户终端] -->|Unix 套接字| Approvals[审批端点]
-  MCP --> Core[操作状态、审批规则与审计]
+  MCP --> API[CoreAPI：任务治理与结果回读]
+  API --> Core[操作状态、审批规则与审计]
   Approvals --> Core
   Core --> Mock[Python Mock 合成手机]
   Core --> Simctl[Apple Simulator 诊断]
@@ -20,7 +21,8 @@ flowchart TD
 | 位置 | 职责 |
 | --- | --- |
 | `phonebridge/cli.py` | 选择 `mock` 或 `simctl`，启动 MCP 会话和可选审批端点，或发出审批命令。 |
-| `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果。 |
+| `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果；作为薄壳调用稳定内部 API。 |
+| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限，状态改变后自动回读，结果不明即暂停。任务窗口重置与审批动作都不暴露给 Agent。 |
 | `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本，执行前再次检查有效期和状态。 |
 | `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝。 |
 | `phonebridge/drivers.py` | `MockIPhone` 模拟合成私信场景、联系人、输入焦点与记录。`AppleSimulatorDriver` 调用 `xcrun simctl` 读取选定设备状态、启动自有夹具及保存截图。 |

@@ -85,6 +85,22 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 
 以上仍只覆盖 Apple Simulator 与自有合成夹具；真机、真实第三方 App 与 Hark 联调未验证。
 
+## 2026-11-10 追加 · 步骤 1 核心稳定化
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 稳定内部 API | 新增 `phonebridge/api.py`：`CoreAPI.dispatch(action, args)` 作为 MCP 壳和未来独立 App 壳共用的唯一入口；12 个动作名与 MCP 工具名一致，启动时校验两者契约同步。审批的 `approve` / `deny` / `approval_list` 不在动作表里，Agent 无法通过 `dispatch` 触及。 |
+| 任务时限 | 从第一个改变状态的动作开始计时，超时后拒绝后续状态改变，只读动作仍可用；`reset_task()` 只供可信侧调用，不是 MCP 工具。 |
+| 动作预算 | 只累计改变状态的动作尝试（含失败），耗尽返回 `action_budget_exhausted`；只读动作不消耗预算。 |
+| 有限重试 | 失败时返回 `retry` 建议并记录连续失败次数，超过 `--max-retries` 返回不允许重试；提交类动作永不建议自动重试，结果不明时禁止自动重放。成功后计数归零。 |
+| 只读重试上限 | 连续相同只读动作超过 `--max-read-retries` 返回 `read_retry_limit_exceeded`；自动回读直接走核心观察，不占该配额。 |
+| 结果不明回读 | 每个成功的状态改变自动调用核心观察；缺本次证据返回 `verification.outcome: unclear`、`pause: true`、`automatic_retry: false`，观察抛异常同样 fail closed。 |
+| 单元测试 | `tests/test_core_api.py` 15 项通过，覆盖契约一致性、时限、预算耗尽、只读配额、重试上限、提交不重试、回读不明确与异常、审批通道仍可用。Python 全套 114 项通过。 |
+| 真实 stdio 验证 | `--task-timeout 60 --action-budget 2 --max-read-retries 3 --max-retries 1`：`phone_status` 返回任务快照，前两个状态改变 `verification.outcome: clear`，第三个返回 `action_budget_exhausted`，进程正常退出。 |
+| 回归 | 重跑 `scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`；XCUITest 4 项、v0.2 归档 10 项通过。 |
+
+MCP 工具契约未变：仍 12 个工具、参数与别名行为一致。真机、真实第三方 App 与 Hark 联调仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

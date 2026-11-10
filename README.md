@@ -74,7 +74,9 @@ python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serv
 # 需要受控交互时，由操作者在可信终端显式追加：--allow-xcode-interactions
 ```
 
-`--fixture-bundle` 指定自有夹具，`--bridge-timeout` 设置握手与调用超时（默认 15 秒），`--session-id` 可显式指定会话标识（默认每进程唯一）。`scripts/xcode-mcp-draft-spike.py --sim-udid <UDID>` 可复跑步骤 0b 拟稿试跑并输出 G1 证据。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
+`--fixture-bundle` 指定自有夹具，`--bridge-timeout` 设置握手与调用超时（默认 15 秒），`--session-id` 可显式指定会话标识（默认每进程唯一）。`scripts/xcode-mcp-draft-spike.py --sim-udid <UDID>` 可复跑步骤 0b 拟稿试跑并输出 G1 证据。
+
+`CoreAPI.dispatch`（`phonebridge/api.py`）是 MCP 壳与未来独立 App 壳共用的稳定内部入口。`--task-timeout`（默认 300 秒，从首个状态改变动作计时）、`--action-budget`（默认 40 次）、`--max-read-retries`（默认 5 次）和 `--max-retries`（默认 2 次）限定单任务投入；状态改变后自动回读，结果不明返回 `verification.outcome: unclear` 并要求暂停，不自动重放。`phone_status` 返回任务快照，重置任务窗口不暴露为 MCP 工具。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 ## 历史版本与开发
 

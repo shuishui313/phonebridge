@@ -5,6 +5,7 @@ import argparse
 import json
 import sys
 
+from .api import CoreAPI
 from .approvals import ApprovalEndpoint, approval_request
 from .core import PhoneBridge
 from .drivers import AppleSimulatorDriver, MockIPhone
@@ -24,6 +25,14 @@ def main(argv=None):
     p.add_argument("--bridge-timeout", type=float, default=15.0,
                    help="Hard timeout in seconds for Xcode MCP handshake and calls")
     p.add_argument("--session-id", help="Optional Xcode device interaction session identifier (default: unique)")
+    p.add_argument("--task-timeout", type=float, default=300.0,
+                   help="Task time limit in seconds from the first state-changing action")
+    p.add_argument("--action-budget", type=int, default=40,
+                   help="Maximum number of state-changing action attempts per task")
+    p.add_argument("--max-read-retries", type=int, default=5,
+                   help="Maximum consecutive identical read-only actions")
+    p.add_argument("--max-retries", type=int, default=2,
+                   help="Maximum consecutive failed attempts suggested for retry")
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
@@ -60,11 +69,13 @@ def main(argv=None):
                                     timeout=args.bridge_timeout,
                                     session_identifier=args.session_id)
         bridge = PhoneBridge(driver, audit_path=args.audit_path)
+        api = CoreAPI(bridge, time_limit=args.task_timeout, action_budget=args.action_budget,
+                      max_read_retries=args.max_read_retries, max_retries=args.max_retries)
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket):
-                MCPServer(bridge).serve()
+                MCPServer(api).serve()
         else:
-            MCPServer(bridge).serve()
+            MCPServer(api).serve()
     except BrokenPipeError:
         return 1
     except (OSError, ValueError) as exc:
