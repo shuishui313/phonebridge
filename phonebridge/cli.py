@@ -23,6 +23,7 @@ def main(argv=None):
                    help="Allowlisted fixture bundle ID for the Xcode MCP driver")
     p.add_argument("--bridge-timeout", type=float, default=15.0,
                    help="Hard timeout in seconds for Xcode MCP handshake and calls")
+    p.add_argument("--session-id", help="Optional Xcode device interaction session identifier (default: unique)")
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
@@ -56,7 +57,8 @@ def main(argv=None):
             driver = XcodeMCPDriver(args.sim_udid,
                                     interaction_approved=args.allow_xcode_interactions,
                                     fixture_bundle=args.fixture_bundle,
-                                    timeout=args.bridge_timeout)
+                                    timeout=args.bridge_timeout,
+                                    session_identifier=args.session_id)
         bridge = PhoneBridge(driver, audit_path=args.audit_path)
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket):

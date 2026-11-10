@@ -71,6 +71,7 @@ struct FixtureChatView: View {
     let contact: FixtureContact
     @State private var draft: String = ""
     @State private var messages: [String] = []
+    private var submitDisabled: Bool { CommandLine.arguments.contains("pb-disable-submit") }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -84,13 +85,19 @@ struct FixtureChatView: View {
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("chat.input")
                 Button("Send") {
+                    guard !submitDisabled else { return }
                     guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                     messages.append(draft)
                     draft = ""
                 }
-                .accessibilityIdentifier("chat.send")
+                .disabled(submitDisabled)
+                .accessibilityIdentifier(submitDisabled ? "chat.send.disabled" : "chat.send")
             }
             .padding(12)
+            if submitDisabled {
+                Text("提交路径已禁用").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.submit.disabled.notice")
+            }
         }
         .navigationTitle(contact.name)
     }
@@ -99,6 +106,7 @@ struct FixtureChatView: View {
 struct FixtureFeedView: View {
     @State private var draft: String = ""
     @State private var posts: [String] = []
+    private var submitDisabled: Bool { CommandLine.arguments.contains("pb-disable-submit") }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -112,13 +120,19 @@ struct FixtureFeedView: View {
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("compose.input")
                 Button("Post") {
+                    guard !submitDisabled else { return }
                     guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                     posts.insert(draft, at: 0)
                     draft = ""
                 }
-                .accessibilityIdentifier("compose.post")
+                .disabled(submitDisabled)
+                .accessibilityIdentifier(submitDisabled ? "compose.post.disabled" : "compose.post")
             }
             .padding(12)
+            if submitDisabled {
+                Text("发布路径已禁用").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("compose.submit.disabled.notice")
+            }
         }
         .navigationTitle("X（合成）")
     }

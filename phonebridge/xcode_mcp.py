@@ -16,6 +16,7 @@ import select
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -219,7 +220,7 @@ class XcodeMCPDriver:
     send_enabled = False
     requires_interaction_approval = True
 
-    def __init__(self, udid: str, *, client=None, session_identifier: str = "phonebridge",
+    def __init__(self, udid: str, *, client=None, session_identifier: str | None = None,
                  interaction_approved: bool = False, fixture_bundle: str = FIXTURE_BUNDLE,
                  simulator_checker=None, timeout: float = DEFAULT_TIMEOUT):
         if not isinstance(udid, str) or not re.fullmatch(UDID_PATTERN, udid):
@@ -228,10 +229,15 @@ class XcodeMCPDriver:
             raise ValueError("invalid fixture bundle ID")
         if not isinstance(timeout, (int, float)) or not 0 < float(timeout) <= 120:
             raise ValueError("invalid bridge timeout")
+        if session_identifier is not None and (not isinstance(session_identifier, str)
+                                               or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", session_identifier)):
+            raise ValueError("invalid session identifier")
         self.udid = udid.upper()
         self.client = client or MCPBridgeClient(timeout=float(timeout))
         self.simulator_checker = simulator_checker or default_simulator_checker
-        self.session_identifier = session_identifier
+        # Xcode rejects reusing a recently used session identifier; each process
+        # gets its own unless the operator explicitly supplies one.
+        self.session_identifier = session_identifier or f"phonebridge-{uuid.uuid4().hex[:8]}"
         self.interaction_approved = bool(interaction_approved)
         self.fixture_bundle = fixture_bundle
         self.revision = 0

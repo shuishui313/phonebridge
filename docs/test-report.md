@@ -70,6 +70,21 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 
 以上仅为 Simulator 准入能力，真机与真实第三方 App 仍未验证。
 
+## 2026-11-10 追加 · 步骤 0b 拟稿试跑与 G1
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 提交路径禁用 | 自有 SwiftUI 夹具新增 `pb-disable-submit` 启动参数：私信 Send 与信息流 Post 按钮变为 Disabled，并显示可回读的禁用提示标识。新增第 4 项 XCUITest 覆盖该场景，4 项全部通过。 |
+| 试跑入口 | `scripts/xcode-mcp-draft-spike.py --sim-udid <UDID>`：用 `simctl` 带禁用参数重启夹具，启动真实 stdio MCP 子进程，按最新 UI 层级的 `identifier` 与 `hitPoint` 定位元素并换算 0–1 坐标。 |
+| 拟稿与回读 | 按稳定 ID `contact.contact-02` / `Casey` 定位合成联系人，聚焦 `chat.input`，`phone_type_text` 输入中文「测试消息」；层级中该输入框 `value` 精确等于「测试消息」。 |
+| 记录增量为零 | 提交按钮标识为 `chat.send.disabled`、不存在 `chat.send`，点击禁用按钮后仍不存在 `chat.message.0`。 |
+| 负面用例 | `message_prepare` 返回 `real_message_sending_disabled`；另起一个不带 `--allow-xcode-interactions` 的服务进程，`phone_tap` 返回 `independent_approval_required`。两处拒绝均生效。 |
+| G1 判据 | 上述全部通过，`g1_passed: true`。等价 MCP 工具序列由自动化脚本执行；隔离的 Codex 会话仍建议在接手时复核一次。 |
+| 会话 ID 修复 | 试跑发现固定会话标识会被 Xcode 判为「recently used」而拒绝；改为每进程默认生成唯一会话 ID，CLI 可用 `--session-id` 显式指定。新增单元测试覆盖。 |
+| 回归 | Python 99 项通过、v0.2 归档 10 项通过、XCUITest 4 项通过。 |
+
+以上仍只覆盖 Apple Simulator 与自有合成夹具；真机、真实第三方 App 与 Hark 联调未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

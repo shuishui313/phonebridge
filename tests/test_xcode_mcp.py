@@ -105,6 +105,15 @@ class XcodeMCPTests(unittest.TestCase):
         self.assertEqual(result["fixture_bundle"], FIXTURE_BUNDLE)
         self.assertEqual(self.client.calls, [])
 
+    def test_session_identifiers_are_unique_by_default(self):
+        first = self.driver()
+        second = self.driver()
+        self.assertNotEqual(first.session_identifier, second.session_identifier)
+        self.assertTrue(first.session_identifier.startswith("phonebridge-"))
+        self.assertEqual(self.driver(session_identifier="pb-fixed").session_identifier, "pb-fixed")
+        with self.assertRaises(ValueError):
+            self.driver(session_identifier="bad id!")
+
     def test_invalid_configuration(self):
         with self.assertRaises(ValueError):
             XcodeMCPDriver("not-a-udid", client=self.client)

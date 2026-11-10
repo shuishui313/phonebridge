@@ -40,4 +40,6 @@ XCUITest 直接操作自有 App，模拟发送发生在 App 的内存里。当�
 
 `python3 -m phonebridge.cli --driver xcode-mcp --sim-udid "$SIM_UDID" serve` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活已安装夹具并读回本地截图与 UI 层级。交互命令语法来自 Xcode 导出的 `device-interaction` skill（`t x y`、`t x1 y1 f x2 y2`、`sender keyboard kbd <text>`、空命令仅捕获状态），0–1 坐标按层级文件中的 Window 尺寸换算。
 
+步骤 0b 拟稿试跑脚本为 `scripts/xcode-mcp-draft-spike.py --sim-udid <UDID>`：它用带 `pb-disable-submit` 参数的夹具重启设备会话，按最新 UI 层级的稳定标识定位合成联系人和输入框，录入并回读完整草稿，核验记录增量为零与两处拒绝生效，最后输出 `g1_passed`。运行脚本即代表操作者显式开启交互能力；隔离的 Codex 会话可复用同一序列复核。证据见 [测试报告](test-report.md)。
+
 仅允许 6 个设备交互／诊断工具。驱动准入先通过 `simctl` 清单和会话返回字段双重确认目标是 Simulator；每次交互前重新捕获层级并确认前台是自有夹具、截图与层级均为本次结果；握手和调用有硬超时（默认 15 秒，`--bridge-timeout` 可调），断线会释放会话。点击、滑动、输入和 Home 键默认拒绝，只有操作者在可信终端启动服务时追加 `--allow-xcode-interactions` 才启用，发送消息始终禁用。会话在服务结束时关闭。`--fixture-bundle` 可指定自有夹具的 bundle ID。边界说明见 [安全边界](security.md)，驱动用法见 [README](../README.md)。

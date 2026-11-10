@@ -39,6 +39,24 @@ final class PhoneBridgeFixtureUITests: XCTestCase {
         XCTAssertTrue(app.buttons["contact.alex-02"].exists)
     }
 
+    func testSubmitPathCanBeDisabledForDraftSpike() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["pb-disable-submit"]
+        app.launch()
+        XCTAssertTrue(app.navigationBars["PhoneBridge"].waitForExistence(timeout: 12))
+        app.buttons["app.whatsapp"].tap()
+        XCTAssertTrue(app.buttons["contact.contact-02"].waitForExistence(timeout: 8))
+        app.buttons["contact.contact-02"].tap()
+        let input = app.textFields["chat.input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        input.tap()
+        input.typeText("PB Draft Test")
+        XCTAssertTrue(app.staticTexts["chat.submit.disabled.notice"].exists)
+        XCTAssertTrue(app.buttons["chat.send.disabled"].exists)
+        XCTAssertFalse(app.buttons["chat.send"].exists)
+        XCTAssertFalse(app.staticTexts["chat.message.0"].exists)
+    }
+
     func testComposeAndReadBackInsideXFixture() throws {
         let app = XCUIApplication()
         app.launch()
