@@ -14,7 +14,7 @@
 | 本机 Swift／脚本检查 | 3 份 Swift 文件通过解析，3 份 Shell 脚本通过 Bash 语法检查。用 XcodeGen 2.46.0 生成含 XCUITest scheme 的工程，`plutil -lint` 通过。 |
 | GitHub Actions · Python | Ubuntu 的 Python 3.10 和 3.13 均成功安装 CLI，各通过 79 项整合测试和 10 项 v0.2 测试，0 失败，0 跳过。历史 FastMCP 冒烟按配置只在 3.10 作业运行且通过。[CI 运行记录](https://github.com/shuishui313/phonebridge/actions/runs/42773456200) |
 | GitHub Actions · Apple Simulator | Xcode 27.1（27A9275），iPhone 18 Pro Simulator，iOS 27.0。首轮首屏冒烟通过，两个 UI 测试中一个超时。修正 SwiftUI 无障碍标识后，首屏冒烟和两项 XCUITest 全通过。[首轮](https://github.com/shuishui313/phonebridge/actions/runs/42773418532) · [通过的重跑](https://github.com/shuishui313/phonebridge/actions/runs/42774343133) |
-| Apple Xcode MCP | 本机 Xcode 27.2 包含 `mcpbridge`，导出的 Claude 插件配置指向同一个命令。Xcode 工具会话尚未连通。独立的 XCUITest 和 PhoneBridge 的 MCP 运行证据分别见本表。 |
+| Apple Xcode MCP | 本机 Xcode 27.2 包含 `mcpbridge`，导出的 Claude 插件配置指向同一个命令。已开启 Xcode Intelligence 的 MCP 权限并完成 stdio 握手，枚举出 54 个工具，含设备交互类；详细结果见下节。独立的 XCUITest 和 PhoneBridge 的 MCP 运行证据分别见本表。 |
 | Hark、真机与真实微信 | 未运行。本次验证未连接实体 iPhone 或真实微信。 |
 
 ## 2026-11-10 晚间补充 · 本机 Apple Simulator 实测
@@ -30,6 +30,17 @@
 | 修复记录 | 首次运行因 XcodeGen 2.46.0 + Xcode 27 生成的工程缺少 `PRODUCT_NAME` 而构建失败（"Multiple commands produce '.app'"）。在 `simulator/project.yml` 的 `settings.base` 显式加 `PRODUCT_NAME: $(TARGET_NAME)` 后通过。 |
 
 Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 的结论已沉淀，后续 GitHub Actions 的 macOS runner 同样适用。Hark、真机与真实微信仍未验证，本节结论只覆盖 Simulator 与 simctl Driver 能力。
+
+## 2026-11-10 晚间补充 · Xcode 官方 MCP 探测
+
+在 Xcode 27.2（27B52）的 Intelligence 设置中开启「允许外部 Agent 使用 Xcode 工具」后，对 `xcrun mcpbridge`（serverInfo `xcode-tools` 25464）做了 stdio 握手探测。
+
+| 探测项 | 实际结果 |
+| --- | --- |
+| 工具枚举 | `tools/list` 返回 54 个工具：构建／测试（`BuildProject`、`RunAllTests` 等）、项目文件读写、预览渲染、诊断日志、文档搜索，以及设备交互五件套。 |
+| 设备交互类 | `DeviceInteractionStartSession`（无 workspace，按 UDID 寻找并启动设备）、`DeviceInteractionInstallAndRun`、`DeviceInteractionSynthesize`、`DeviceInteractionEndSession`。`Synthesize` 描述为在物理设备或模拟器上合成 tap、swipe、type、硬件按键与方向变化，每次执行后返回截图与 UI 层级文件路径；参数 `activationBundleId` 说明为「在任何交互前激活的 App 的 bundle ID」，未见仅限开发者自有 App 的字样。 |
+| 批准流程 | 首次工具调用要求先 `XcodeOpenWorkspace` 触发用户批准。从受限执行环境发起时 Xcode 报 "can't be put in front of the user for approval"，批准框无法弹出；已准备独立探测脚本（打开夹具工程 → 开会话 → 激活系统「设置」App 并点击 → 读回截图与层级），待在真实终端会话执行。 |
+| 待定结论 | 「激活任意 bundle ID 并合成事件」是否适用于非自有 App 尚未实测，不能据此宣称可控制第三方 App。若验证通过，评估将 `mcpbridge` 包装为 PhoneBridge 的设备 Driver 并沿用现有审批层；CI 回归仍以固定 XCUITest 为准。 |
 
 ## 重跑自动测试
 
