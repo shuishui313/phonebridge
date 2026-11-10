@@ -1,0 +1,47 @@
+name: Apple Simulator
+
+on:
+  push:
+    paths:
+      - .github/workflows/simulator.yml
+      - scripts/apple-simulator-test.sh
+      - scripts/simctl-preflight.sh
+      - scripts/simulator-smoke.sh
+      - simulator/**
+  pull_request:
+    paths:
+      - .github/workflows/simulator.yml
+      - scripts/apple-simulator-test.sh
+      - scripts/simctl-preflight.sh
+      - scripts/simulator-smoke.sh
+      - simulator/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Run launch smoke and UI tests on iOS 27
+        shell: bash
+        run: |
+          ./scripts/simctl-preflight.sh
+          simulator_udid="$(
+            xcrun simctl list devices available -j | jq -er '
+              [.devices | to_entries[] |
+                select(.key | startswith("com.apple.CoreSimulator.SimRuntime.iOS-27-")) |
+                .value[] | select(.isAvailable and (.name | startswith("iPhone ")))]
+              | first | .udid
+            '
+          )"
+          xcrun simctl bootstatus "$simulator_udid" -b
+          ./scripts/simulator-smoke.sh "$simulator_udid"
+          ./scripts/apple-simulator-test.sh "$simulator_udid"
