@@ -12,16 +12,17 @@ from .mcp import error_payload, read_message, write_message
 from .model import BridgeError
 
 
-def private_path(path):
+def private_path(path, expected_uid=None):
     if not path.is_absolute():
         raise ValueError("The approval socket path must be absolute.")
+    owner = os.getuid() if expected_uid is None else int(expected_uid)
     parent = path.parent.lstat()
     if (
         not stat.S_ISDIR(parent.st_mode)
-        or parent.st_uid != os.getuid()
+        or parent.st_uid != owner
         or stat.S_IMODE(parent.st_mode) != 0o700
     ):
-        raise ValueError("The approval socket needs a directory owned by you with mode 0700.")
+        raise ValueError("The approval socket needs a private 0700 directory owned by the approver.")
     return path
 
 

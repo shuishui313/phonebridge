@@ -137,7 +137,22 @@ class CoreAPI:
         return None
 
     def status(self) -> dict:
-        return {**self.bridge.status(), "task": self.governor.snapshot()}
+        return {**self.bridge.status(), "task": self.governor.snapshot(),
+                "submissions": self.bridge.submission_summary()}
+
+    @staticmethod
+    def _record_count(bridge) -> int | None:
+        """Best-effort count of outbound records, used to detect a bypass."""
+        try:
+            messages = getattr(bridge.driver, "messages", None)
+            if isinstance(messages, dict):
+                return sum(len(v) for v in messages.values() if isinstance(v, list))
+            observed = bridge.inspect()
+            if isinstance(observed, dict) and isinstance(observed.get("messages"), list):
+                return len(observed["messages"])
+        except Exception:
+            return None
+        return None
 
     def reset_task(self) -> None:
         """Trusted-side only; the Agent cannot call this through MCP."""
@@ -170,6 +185,7 @@ class CoreAPI:
             return problem
         if action == "phone_status":
             return self.status()
+        before = self._record_count(self.bridge) if kind == "mutating" else None
         try:
             result = getattr(self.bridge, method)(*[args[field] for field in fields])
         except Exception:
@@ -181,4 +197,16 @@ class CoreAPI:
         self.governor.note_success()
         if kind == "read":
             return result
-        return {**result, "verification": self._verify()}
+        verification = self._verify()
+        evidence = result.get("verification")
+        if isinstance(evidence, dict):
+            verification = {**verification, **evidence}
+        if before is not None:
+            after = self._record_count(self.bridge)
+            if after is not None and after > before:
+                # Only phone_execute_operation may add a record. A generic
+                # interaction that does so bypassed the approval gate.
+                verification = {**verification, "submission_bypass_detected": True,
+                                "outcome": "unclear", "pause": True,
+                                "automatic_retry": False}
+        return {**result, "verification": verification}

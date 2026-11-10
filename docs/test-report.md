@@ -101,6 +101,23 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 
 MCP 工具契约未变：仍 12 个工具、参数与别名行为一致。真机、真实第三方 App 与 Hark 联调仍未验证。
 
+## 2026-11-10 追加 · 步骤 2 逐笔审批与恢复
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 唯一提交入口 | `phonebridge/submissions.py` 的 `SubmissionGate` 是唯一调用 `driver.virtual_send` 的代码路径；源码扫描测试确认其他模块无直接调用。`CoreAPI.dispatch` 不暴露批准、拒绝、提案列表与恢复动作。 |
+| 脱敏持久化台账 | `--submission-state` 使用 0700 目录内的 0600 JSONL，跨进程 `flock` 串行化，每条事件 `fsync` 后返回。只记录操作 ID、收件人 ID、正文 SHA-256／长度与状态迁移（`prepared → approved → denied / dispatching → completed / unresolved`）。测试读取原始文件断言明文正文与 `message`/`text`/`body`/`content` 字段均不存在。 |
+| 提交前原子记录 | 派发状态在设备调用**之前**落盘，随后才消费审批并调用设备。提交前中断（注入崩溃钩子）后台账停在 `dispatching`，重启恢复为 `unresolved` 并暂停，记录数为零，不自动重发。 |
+| 提交后回执丢失 | 设备调用已生效但回执丢失时，重启按目标与操作 ID 读回记录并确认，标记 `completed` 且不重发，记录数保持 1；若设备状态无法确认则标记 `unresolved` 并暂停。已批准但未派发的操作重启后同样暂停。恢复可重复执行且不产生新动作。 |
+| 拒绝路径 | 未批准、切换收件人、追加正文导致草稿变化、TTL 过期、重放、8 线程并发执行均通过：批准后只增加一条匹配记录，第二次执行返回 `unknown_or_processed_operation`。 |
+| 通用交互绕行 | 自定义驱动在 `tap` 中绕过审批直接提交时，`CoreAPI` 回读发现记录数增加，返回 `verification.submission_bypass_detected: true`、`outcome: unclear`、`pause: true`、`automatic_retry: false`；经 `phone_execute_operation` 的合法提交不触发该标记。 |
+| 审批通道隔离 | `--approval-token-env` 要求每次请求携带操作者终端注入的令牌（不出现在进程命令行）；`--approval-uid` 用 OS 对端凭据（Linux `SO_PEERCRED` / macOS `LOCAL_PEERCRED`）限定审批者，配置 UID 与服务进程同账号时拒绝启动。`--require-approval-isolation` 在缺少隔离或持久化台账时拒绝启动。`phone_status` 的 `submissions.approval_isolated` 披露当前状态。 |
+| 单元测试 | `tests/test_submissions.py` 24 项通过，覆盖上述全部路径；Python 全套 138 项通过、v0.2 归档 10 项通过。 |
+| 真实 stdio 端到端 | 双子进程验证：`--require-approval-isolation` 启动后 `approval_isolated: true`；不带令牌的审批请求返回 `approval_token_required`，带令牌批准成功；`phone_execute_operation` 返回 `submission_state: completed`、记录数 1、重放被拒；台账文件不含明文。向台账注入一条 `dispatching` 后重启，服务启动时输出恢复报告，`prior_state: dispatching`、暂停且不重发。 |
+| 回归 | 重跑 `scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`；XCUITest 4 项全过 `TEST SUCCEEDED`；MCP 工具契约仍为 12 个工具。 |
+
+**边界声明**：未配置令牌或独立 UID 时审批通道仍是同账号演示模式，同 OS 账号下可自由执行 shell 的 Agent 仍可能自批；可写联调与真机阶段必须配置独立 UID 或外部可信审批端。真机、真实第三方 App 与 Hark 联调仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

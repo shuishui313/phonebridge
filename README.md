@@ -76,7 +76,9 @@ python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serv
 
 `--fixture-bundle` 指定自有夹具，`--bridge-timeout` 设置握手与调用超时（默认 15 秒），`--session-id` 可显式指定会话标识（默认每进程唯一）。`scripts/xcode-mcp-draft-spike.py --sim-udid <UDID>` 可复跑步骤 0b 拟稿试跑并输出 G1 证据。
 
-`CoreAPI.dispatch`（`phonebridge/api.py`）是 MCP 壳与未来独立 App 壳共用的稳定内部入口。`--task-timeout`（默认 300 秒，从首个状态改变动作计时）、`--action-budget`（默认 40 次）、`--max-read-retries`（默认 5 次）和 `--max-retries`（默认 2 次）限定单任务投入；状态改变后自动回读，结果不明返回 `verification.outcome: unclear` 并要求暂停，不自动重放。`phone_status` 返回任务快照，重置任务窗口不暴露为 MCP 工具。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
+`CoreAPI.dispatch`（`phonebridge/api.py`）是 MCP 壳与未来独立 App 壳共用的稳定内部入口。`--task-timeout`（默认 300 秒，从首个状态改变动作计时）、`--action-budget`（默认 40 次）、`--max-read-retries`（默认 5 次）和 `--max-retries`（默认 2 次）限定单任务投入；状态改变后自动回读，结果不明返回 `verification.outcome: unclear` 并要求暂停，不自动重放。`phone_status` 返回任务快照，重置任务窗口不暴露为 MCP 工具。
+
+`--submission-state` 指定 0700 目录内的 0600 JSONL 台账，持久化操作 ID、收件人 ID、正文 SHA-256 与状态迁移，**不存明文正文**；派发状态在设备调用前落盘，重启后先读回设备再决定状态，无法确认即暂停且不自动重发。`--approval-token-env` 从操作者终端环境读取审批令牌，`--approval-uid` 用 OS 对端凭据限定审批者账号，`--require-approval-isolation` 会在缺少隔离配置或持久化台账时拒绝启动；`phone_status` 的 `submissions.approval_isolated` 披露当前状态。未配置隔离时仅用于 Mock 演示，详见 [安全边界](docs/security.md)。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 ## 历史版本与开发
 

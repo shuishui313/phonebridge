@@ -8,8 +8,8 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
-1. 步骤 0a 驱动准入、0b 拟稿试跑、1 核心稳定化均已完成并实测，G1 通过：`CoreAPI.dispatch` 为唯一内部入口，任务时限、动作预算、有限重试、只读重试上限与结果不明回读均有测试；MCP 工具契约未变，见 [测试报告](docs/test-report.md)。下一步按步骤 2 做逐笔审批与恢复：把审批放到 Agent 无法使用的通道，提供唯一提交入口，执行前原子记录操作 ID、审批消费与派发状态，并覆盖提交前中断与提交后回执丢失两类回归。 [实现计划](docs/implementation-plan.md)
-2. 步骤 1 补任务时限、动作预算和有限重试。步骤 2 验证独立审批、持久化防重及断线恢复。提交结果不明确时先回读，仍无法判定就暂停。 [实现计划](docs/implementation-plan.md)
+1. 步骤 0a、0b、1、2 均已完成并实测，G1 通过。步骤 2 交付：`SubmissionLedger` 脱敏持久化状态、`SubmissionGate` 唯一提交入口（派发状态在设备调用前 `fsync`）、审批端点的令牌与独立 UID 对端凭据隔离、提交前中断／回执丢失／并发／重启／绕行回归，见 [测试报告](docs/test-report.md)。下一步按步骤 3 做 Hark 经 SSH 的完整联调：连通、成功、失败、中断记录与重连防重。 [实现计划](docs/implementation-plan.md)
+2. 可写联调与真机阶段必须用 `--require-approval-isolation` 启动，配置 `--approval-token-env` 或 `--approval-uid`，并指定 `--submission-state`；未配置隔离时只是 Mock 演示模式，`phone_status` 的 `submissions.approval_isolated` 为 `false`。提交结果不明确时先回读，仍无法判定就暂停，禁止自动重发。 [安全边界](docs/security.md)
 3. Hark 经 SSH 的连通性可先用 Mock 验证，通道 A 可并行验证自有 App 的无副作用意图。步骤 2 通过后再执行步骤 3 的完整 Hark 联调，覆盖审批、回读和重连防重。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
 4. G3a 经用户另行授权后开始真机只读取证。G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入。目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付操作默认禁用。 [iOS 可行性](docs/ios-feasibility.md) · [实现计划](docs/implementation-plan.md)
 

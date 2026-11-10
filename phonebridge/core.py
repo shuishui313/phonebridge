@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .drivers import MESSAGING_APP, MockIPhone, fail
+from .submissions import SubmissionGate, digest_of
 
 
 def normalized_coordinates(*coordinates):
@@ -43,13 +44,20 @@ class Proposal:
 
 
 class PhoneBridge:
-    def __init__(self, driver=None, *, approval_ttl: int = 300, audit_path: str | None = None, clock=None):
+    def __init__(self, driver=None, *, approval_ttl: int = 300, audit_path: str | None = None,
+                 clock=None, ledger=None, submission_hooks: dict | None = None,
+                 approval_isolated: bool = False):
         self.driver = driver if driver is not None else MockIPhone()
         self.ttl = approval_ttl
         self.clock = clock or time.monotonic
         self._lock = threading.RLock()
         self.proposals: dict[str, Proposal] = {}
         self.audit_path = Path(audit_path) if audit_path else None
+        self.approval_isolated = bool(approval_isolated)
+        self.submission_hooks = submission_hooks
+        # Single submission entry point. All durable state lives in the ledger,
+        # which never stores the plaintext message body.
+        self.submissions = SubmissionGate(self, ledger)
 
     def _audit(self, action, result, **safe_fields):
         if self.audit_path is None:
@@ -141,9 +149,13 @@ class PhoneBridge:
             op_id = secrets.token_urlsafe(24)
             self.proposals[op_id] = Proposal(op_id, canonical_id, recipient["name"], message,
                                              self.driver.revision, self.clock())
+            digest = hashlib.sha256(message.encode()).hexdigest()
+            self.submissions.ledger.append(
+                "prepared", op_id=op_id, recipient_id=canonical_id,
+                message_sha256=digest, message_chars=len(message))
             return self._audit("prepare_message", {"ok": True, "approval_id": op_id,
                 "recipient_name": recipient["name"], "recipient_id": canonical_id,
-                "message_length": len(message), "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
+                "message_length": len(message), "message_sha256": digest,
                 "approved": False, "simulated": True, "real_message_sent": False}, recipient_id=canonical_id)
 
     def _is_current(self, p: Proposal):
@@ -169,6 +181,8 @@ class PhoneBridge:
             if not self._is_current(p):
                 return fail("stale_or_expired_proposal")
             p.approved = True
+            self.submissions.ledger.append("approved", op_id=op_id,
+                                           message_sha256=digest_of(p.message))
             return self._audit("approve", {"ok": True, "approved": True}, recipient_id=p.recipient_id)
 
     def deny(self, op_id: str):
@@ -177,20 +191,23 @@ class PhoneBridge:
             if not p or p.consumed or p.denied:
                 return fail("unknown_or_processed_approval")
             p.denied = True
+            self.submissions.ledger.append("denied", op_id=op_id)
             return self._audit("deny", {"ok": True, "denied": True}, recipient_id=p.recipient_id)
 
     def execute(self, op_id: str):
+        """Single submission entry point. Never call driver.virtual_send elsewhere."""
         with self._lock:
-            p = self.proposals.get(op_id)
-            if not p or p.consumed or p.denied:
-                return fail("unknown_or_processed_operation")
-            if not p.approved:
-                return fail("independent_approval_required")
-            if not self._is_current(p):
-                p.consumed = True
-                return fail("stale_or_expired_proposal")
-            p.consumed = True  # consume before sending; replay cannot duplicate
-            if not getattr(self.driver, "simulated", False):
-                return fail("real_message_sending_disabled")
-            result = self.driver.virtual_send(p.recipient_id, p.message)
-            return self._audit("execute_virtual_message", result, recipient_id=p.recipient_id)
+            result = self.submissions.execute(op_id, hooks=self.submission_hooks)
+            recipient = (self.proposals.get(op_id).recipient_id
+                         if op_id in self.proposals else None)
+            return self._audit("execute_virtual_message", result, recipient_id=recipient,
+                               submission_state=result.get("submission_state"))
+
+    def submission_summary(self) -> dict:
+        return {**self.submissions.ledger.summary(),
+                "approval_isolated": self.approval_isolated}
+
+    def recover_submissions(self) -> dict:
+        """Trusted-side startup step; never exposed as an MCP tool."""
+        with self._lock:
+            return self.submissions.recover()

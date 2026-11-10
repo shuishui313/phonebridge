@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .api import CoreAPI
@@ -10,6 +11,7 @@ from .approvals import ApprovalEndpoint, approval_request
 from .core import PhoneBridge
 from .drivers import AppleSimulatorDriver, MockIPhone
 from .mcp_v04 import MCPServer
+from .submissions import SubmissionLedger
 from .xcode_mcp import XcodeMCPDriver
 
 
@@ -34,19 +36,28 @@ def main(argv=None):
     p.add_argument("--max-retries", type=int, default=2,
                    help="Maximum consecutive failed attempts suggested for retry")
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
+    p.add_argument("--submission-state", help="Private 0600 JSONL ledger in a 0700 directory")
+    p.add_argument("--approval-token-env", help="Env var holding the trusted-side approval token")
+    p.add_argument("--approval-uid", type=int, help="UID allowed to reach the approval channel")
+    p.add_argument("--require-approval-isolation", action="store_true",
+                   help="Refuse to start unless approval isolation and durable state are configured")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
     ap = sub.add_parser("approvals")
     ap.add_argument("action", choices=["list", "approve", "deny"])
     ap.add_argument("id", nargs="?")
+    ap.add_argument("--token-env", help="Env var holding the approval token")
+    ap.add_argument("--socket-owner-uid", type=int, help="Socket owner UID for a separate approver account")
     args = p.parse_args(argv)
     if args.command == "approvals":
         if not args.approval_socket:
             p.error("--approval-socket is required for approvals")
         if args.action in ("approve", "deny") and not args.id:
             p.error("approval ID required")
+        token = os.environ.get(args.token_env) if args.token_env else None
         try:
-            response = approval_request(args.approval_socket, args.action, args.id)
+            response = approval_request(args.approval_socket, args.action, args.id,
+                                        token=token, socket_owner_uid=args.socket_owner_uid)
         except (OSError, ValueError) as exc:
             print(f"Approval channel unavailable: {type(exc).__name__}", file=sys.stderr)
             return 2
@@ -56,8 +67,17 @@ def main(argv=None):
         p.error(f"--sim-udid required when --driver {args.driver}")
     if args.allow_xcode_interactions and args.driver != "xcode-mcp":
         p.error("--allow-xcode-interactions requires --driver xcode-mcp")
+    token = os.environ.get(args.approval_token_env) if args.approval_token_env else None
+    if args.require_approval_isolation:
+        if not args.approval_socket:
+            p.error("--require-approval-isolation needs --approval-socket")
+        if not token and args.approval_uid is None:
+            p.error("--require-approval-isolation needs --approval-token-env or --approval-uid")
+        if not args.submission_state:
+            p.error("--require-approval-isolation needs durable --submission-state")
     driver = None
     try:
+        ledger = SubmissionLedger(args.submission_state) if args.submission_state else None
         if args.driver == "mock":
             driver = MockIPhone()
         elif args.driver == "simctl":
@@ -68,11 +88,15 @@ def main(argv=None):
                                     fixture_bundle=args.fixture_bundle,
                                     timeout=args.bridge_timeout,
                                     session_identifier=args.session_id)
-        bridge = PhoneBridge(driver, audit_path=args.audit_path)
+        bridge = PhoneBridge(driver, audit_path=args.audit_path, ledger=ledger)
+        recovery = bridge.recover_submissions()
+        if recovery["recovered"]:
+            print(json.dumps({"submission_recovery": recovery}, ensure_ascii=False), file=sys.stderr)
         api = CoreAPI(bridge, time_limit=args.task_timeout, action_budget=args.action_budget,
                       max_read_retries=args.max_read_retries, max_retries=args.max_retries)
         if args.approval_socket:
-            with ApprovalEndpoint(bridge, args.approval_socket):
+            with ApprovalEndpoint(bridge, args.approval_socket, token=token,
+                                  required_uid=args.approval_uid):
                 MCPServer(api).serve()
         else:
             MCPServer(api).serve()
