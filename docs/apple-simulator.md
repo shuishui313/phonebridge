@@ -9,7 +9,7 @@
 
 ## 前置条件与运行方式
 
-在 macOS 安装并选中完整 Xcode，完成初次启动设置，安装 iOS 27 Simulator runtime 并创建一台 iPhone Simulator。安装 [XcodeGen](https://github.com/yonaskolb/XcodeGen) 后，从仓库根目录运行以下命令。
+在 macOS 安装并选中完整 Xcode，完成初次启动设置，安装 iOS 27 Simulator runtime 并创建一台 iPhone Simulator。安装 [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46.0 及以上版本。`simulator/project.yml` 已显式设置 `PRODUCT_NAME: $(TARGET_NAME)`，这是 Xcode 27 环境必需的，否则生成的工程会因空产物名而构建失败。从仓库根目录运行以下命令。
 
 ```sh
 ./scripts/simctl-preflight.sh
