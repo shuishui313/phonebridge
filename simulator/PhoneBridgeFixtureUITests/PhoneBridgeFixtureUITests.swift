@@ -12,6 +12,7 @@ final class PhoneBridgeFixtureUITests: XCTestCase {
         let contact = app.buttons["contact.xiaoming-01"]
         XCTAssertTrue(contact.waitForExistence(timeout: 8))
         contact.tap()
+        XCTAssertTrue(app.navigationBars["小明"].waitForExistence(timeout: 8))
         let input = app.textFields["chat.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 8))
         input.tap()

@@ -34,7 +34,6 @@ struct FixtureRootView: View {
                 .accessibilityIdentifier("contact.\(contact.id)")
             }
             .navigationTitle("PhoneBridge")
-            .accessibilityIdentifier("fixture.contacts")
         }
     }
 }
@@ -50,7 +49,6 @@ struct FixtureChatView: View {
                 Text(messages[index])
                     .accessibilityIdentifier("chat.message.\(index)")
             }
-            .accessibilityIdentifier("chat.history")
 
             HStack {
                 TextField("Message", text: $draft)
@@ -66,6 +64,5 @@ struct FixtureChatView: View {
             .padding(12)
         }
         .navigationTitle(contact.name)
-        .accessibilityIdentifier("chat.\(contact.id)")
     }
 }
