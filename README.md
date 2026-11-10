@@ -82,4 +82,4 @@ python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serv
 - `legacy/v0.2/` 保留九个原始文件。Mock 测试用 `python3 -m unittest discover -s legacy/v0.2 -v`。旧 FastMCP 服务的依赖与独立验证入口见测试报告。
 - `artifacts/` 保存两个原始 ZIP；维护中的 v0.4 源码位于 `phonebridge/`、`tests/`、`simulator/` 和 `scripts/`。[源码清单与 SHA-256](docs/artifact-inventory.md)
 
-[测试报告](docs/test-report.md) · [架构](docs/architecture.md) · [阶段验收](docs/acceptance.md) · [合并记录](docs/merge-existing-github.md) · [开发交接](HANDOFF.md)
+[测试报告](docs/test-report.md) · [架构](docs/architecture.md) · [实现计划](docs/implementation-plan.md) · [产品需求](docs/product-requirements.md) · [阶段验收](docs/acceptance.md) · [合并记录](docs/merge-existing-github.md) · [开发交接](HANDOFF.md)

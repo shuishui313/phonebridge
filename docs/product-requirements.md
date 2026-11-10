@@ -1,6 +1,6 @@
 # PhoneBridge 产品需求
 
-2026-11-10 更新。本文记录产品形态决策，技术边界见 [iOS 可行性](ios-feasibility.md)，安全约束见 [安全边界](security.md)。
+2026-11-10 更新。本文记录产品形态决策，具体架构、两套边界方案与排期步骤见 [实现计划](implementation-plan.md)，技术边界见 [iOS 可行性](ios-feasibility.md)，安全约束见 [安全边界](security.md)。
 
 ## 产品定位
 

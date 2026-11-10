@@ -8,7 +8,7 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
-1. [测试报告](docs/test-report.md) 记录了 SwiftUI 启动、三项 XCUITest、simctl 诊断和 Apple 官方 `XcodeMCPDriver` 的实测。官方接口已能观察并操作系统 App，已包装为 PhoneBridge 驱动，XCTest 桥保留为 CI 回归与回退方案。下一步在开发用 Codex 会话注册 `--driver xcode-mcp`，验证经 MCP 的完整 `观察 → 规划 → 操作 → 回读` 闭环、独立审批和结果回读。CI 仍以固定 XCUITest 为准。
+1. 按 [实现计划](docs/implementation-plan.md) 的步骤 0 执行最小试错：在开发用 Codex 会话注册 `--driver xcode-mcp`，验证经 MCP 的完整 `观察 → 规划 → 操作 → 回读` 闭环、独立审批和结果回读，并把证据写入 [测试报告](docs/test-report.md)。SwiftUI 启动、三项 XCUITest、simctl 诊断和官方 `XcodeMCPDriver` 均已实测；XCTest 桥保留为 CI 回归与回退方案。
 2. 在受控主机上用 Hark 经 SSH 打开 Codex，按 [Hark 接入步骤](docs/hark-codex.md) 跑一次合成任务。分别验证连接中断、结果回读和重连后的防重。
 3. 上层 Agent 补齐任务时限、动作预算、有限重试和断线恢复。只重试已确认无副作用的动作。执行结果不明确时，先回读，再决定是否停止。实际设备接入前将审批移至 Agent 无法访问的独立通道。
 4. 真机、真实第三方 App 和本机运行仍是独立的可行性阶段。仅在用户另行决定后进入真机验证，保持金融与支付操作默认禁用。[iOS 可行性](docs/ios-feasibility.md)
