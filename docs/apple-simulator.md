@@ -32,6 +32,12 @@ python3 -m phonebridge.cli --driver simctl --sim-udid "$SIM_UDID" serve
 - `phone_status` 查看选定 Simulator 的状态。
 - `phone_open_app(app="fixture")` 启动已安装的夹具 `org.example.phonebridge.fixture`。
 - `phone_inspect` 将截图保存在宿主机的本地临时文件中，返回路径和 SHA-256。
-- 点击、滑动、输入、打开真实微信或发送真实消息超出 simctl Driver 的能力，工具会返回对应错误。
+- 点击、滑动、输入、打开真实第三方 App 或发送真实消息超出 simctl Driver 的能力，工具会返回对应错误。
 
 XCUITest 直接操作自有 App，模拟发送发生在 App 的内存里。当前 MCP 到 simctl 的路径限于状态、启动和截图。两条路径的结果分别记录在 [测试报告](test-report.md)。系统权限边界见 [iPhone 与 iOS 27 可行性](ios-feasibility.md)。
+
+## Xcode MCP Driver
+
+`python3 -m phonebridge.cli --driver xcode-mcp --sim-udid "$SIM_UDID" serve` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活已安装夹具并读回本地截图与 UI 层级。交互命令语法来自 Xcode 导出的 `device-interaction` skill（`t x y`、`t x1 y1 f x2 y2`、`sender keyboard kbd <text>`、空命令仅捕获状态），0–1 坐标按层级文件中的 Window 尺寸换算。
+
+仅允许 6 个设备交互／诊断工具；点击、滑动、输入和 Home 键默认拒绝，只有操作者在可信终端启动服务时追加 `--allow-xcode-interactions` 才启用，发送消息始终禁用。会话在服务结束时关闭。边界说明见 [安全边界](security.md)，驱动用法见 [README](../README.md)。

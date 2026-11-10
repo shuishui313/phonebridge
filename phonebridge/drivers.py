@@ -15,8 +15,16 @@ def fail(code: str, **details: Any) -> dict:
     return {"ok": False, "error": code, **details}
 
 
+MESSAGING_APP = "messaging"
+LEGACY_APP_ALIASES = {"wechat": MESSAGING_APP}
+LEGACY_CONTACT_ALIASES = {
+    "test-01": "contact-01", "测试联系人": "contact-01",
+    "xiaoming-01": "contact-02", "小明": "contact-02",
+}
+
+
 class MockIPhone:
-    """A deliberately synthetic virtual phone with a small WeChat-like fixture."""
+    """A deliberately synthetic virtual phone with a generic private-message fixture."""
 
     kind = "mock"
     simulated = True
@@ -30,8 +38,8 @@ class MockIPhone:
         self.input_text = ""
         self.focused = False
         self.contacts = (
-            {"id": "test-01", "name": "测试联系人"},
-            {"id": "xiaoming-01", "name": "小明"},
+            {"id": "contact-01", "name": "Test Contact"},
+            {"id": "contact-02", "name": "Casey"},
             {"id": "alex-01", "name": "Alex"},
             {"id": "alex-02", "name": "Alex"},
         )
@@ -55,11 +63,17 @@ class MockIPhone:
                 "messages": [dict(m) for m in self.messages[self.selected_id]] if self.screen == "chat" and self.selected_id else [],
                 "screenshot": None}
 
+    def resolve_contact_id(self, identity: str) -> str | None:
+        """Canonicalize a legacy fixture ID or name without creating new matches."""
+        resolved = LEGACY_CONTACT_ALIASES.get(identity, identity)
+        return next((c["id"] for c in self.contacts if c["id"] == resolved), None)
+
     def open_app(self, app: str):
-        if app not in ("wechat", "settings"):
+        app = LEGACY_APP_ALIASES.get(app, app)
+        if app not in (MESSAGING_APP, "settings"):
             return fail("app_not_allowlisted", app=app)
         self.app = app
-        self.screen = "contacts" if app == "wechat" else "settings"
+        self.screen = "contacts" if app == MESSAGING_APP else "settings"
         self.selected_id = None
         self.input_text = ""
         self.focused = False
@@ -84,14 +98,15 @@ class MockIPhone:
         return {"ok": True, "simulated": True, "screen": self.screen}
 
     def list_contacts(self):
-        if self.app != "wechat" or self.screen != "contacts":
-            return fail("not_on_wechat_contacts")
+        if self.app != MESSAGING_APP or self.screen != "contacts":
+            return fail("not_on_messaging_contacts")
         return {"ok": True, "simulated": True, "contacts": [dict(x) for x in self.contacts]}
 
     def open_chat(self, identity: str):
-        if self.app != "wechat" or self.screen != "contacts":
-            return fail("not_on_wechat_contacts")
-        matches = [x for x in self.contacts if x["id"] == identity or x["name"] == identity]
+        if self.app != MESSAGING_APP or self.screen != "contacts":
+            return fail("not_on_messaging_contacts")
+        resolved = LEGACY_CONTACT_ALIASES.get(identity, identity)
+        matches = [x for x in self.contacts if x["id"] == resolved or x["name"] == resolved]
         if not matches:
             return fail("contact_not_found")
         if len(matches) > 1:
@@ -106,7 +121,7 @@ class MockIPhone:
     def tap(self, x: float, y: float):
         # Strictly fixture-specific coordinates, not genuine iPhone hit testing.
         if self.screen == "home" and 0.1 <= x <= 0.4 and 0.1 <= y <= 0.5:
-            return self.open_app("wechat")
+            return self.open_app(MESSAGING_APP)
         if self.screen == "contacts":
             idx = round((y - 0.18) / 0.15)
             if 0 <= idx < len(self.contacts) and 0.1 <= x <= 0.9 and abs(y-(0.18+idx*.15)) <= 0.045:
@@ -146,7 +161,7 @@ class MockIPhone:
 class AppleSimulatorDriver:
     """Intentionally limited simctl backend. No general-purpose UI control exists in simctl.
 
-    Supports fixture launch and screenshot, not GUI taps, WeChat or real devices.
+    Supports fixture launch and screenshot, not GUI taps, third-party apps or real devices.
     """
 
     kind = "apple-simulator"

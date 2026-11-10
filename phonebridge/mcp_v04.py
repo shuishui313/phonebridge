@@ -23,24 +23,31 @@ PARAMS: dict[str, tuple[str, ...]] = {
     "phone_tap": ("x", "y"),
     "phone_swipe": ("start_x", "start_y", "end_x", "end_y"),
     "phone_type_text": ("text",),
-    "wechat_list_contacts": (),
-    "wechat_open_chat": ("contact",),
-    "wechat_prepare_message": ("recipient_id", "message"),
+    "contacts_list": (),
+    "contacts_open": ("contact",),
+    "message_prepare": ("recipient_id", "message"),
     "phone_execute_operation": ("approval_id",),
+}
+
+# Historical tool names stay callable for existing MCP clients, but are not advertised.
+LEGACY_TOOL_ALIASES = {
+    "wechat_list_contacts": "contacts_list",
+    "wechat_open_chat": "contacts_open",
+    "wechat_prepare_message": "message_prepare",
 }
 
 DESCRIPTIONS = {
     "phone_status": "Return device mode and capability disclosure. Do not assume a real phone is connected.",
-    "phone_inspect": "Observe simulated screen / selected chat. On simctl, capture screenshot to a private local path.",
-    "phone_open_app": "Open an allowlisted app. Mock: wechat/settings. Apple Simulator: fixture only.",
-    "phone_home": "Go to mock home screen. Not supported by simctl backend.",
+    "phone_inspect": "Observe the driver's screen state or a private local screenshot path.",
+    "phone_open_app": "Open an allowlisted app. Mock: messaging/settings. Apple Simulator: fixture only.",
+    "phone_home": "Go to mock home screen. Not supported by device drivers.",
     "phone_back": "Back navigation on mock fixture only.",
     "phone_tap": "Tap normalized x/y in [0,1]. In mock these are fixed fixture hit targets, NOT real taps.",
     "phone_swipe": "Swipe using normalized coordinates. Not real iPhone control.",
     "phone_type_text": "Type into previously focused input. Never automatically presses Send.",
-    "wechat_list_contacts": "List synthetic fixture contacts. Not real WeChat data.",
-    "wechat_open_chat": "Open synthetic fixture contact by exact name or stable ID. Reject ambiguity.",
-    "wechat_prepare_message": "Prepare virtual message; requires typed draft, current verified recipient. Must be approved through independent local CLI.",
+    "contacts_list": "List synthetic fixture contacts. Not real messaging-app data.",
+    "contacts_open": "Open synthetic fixture contact by exact name or stable ID. Reject ambiguity.",
+    "message_prepare": "Prepare virtual message; requires typed draft, current verified recipient. Must be approved through independent local CLI.",
     "phone_execute_operation": "Execute one approved virtual message exactly once. Cannot send a real iPhone message.",
 }
 
@@ -61,6 +68,7 @@ class MCPServer:
         self.version = None
 
     def _call(self, name: str, args: dict) -> dict:
+        name = LEGACY_TOOL_ALIASES.get(name, name)
         if name not in PARAMS:
             return fail("unknown_tool")
         expected = set(PARAMS[name])
@@ -79,8 +87,8 @@ class MCPServer:
             "phone_status": b.status, "phone_inspect": b.inspect,
             "phone_open_app": b.open_app, "phone_home": b.home, "phone_back": b.back,
             "phone_tap": b.tap, "phone_swipe": b.swipe, "phone_type_text": b.type_text,
-            "wechat_list_contacts": b.list_contacts, "wechat_open_chat": b.open_chat,
-            "wechat_prepare_message": b.prepare_message, "phone_execute_operation": b.execute,
+            "contacts_list": b.list_contacts, "contacts_open": b.open_chat,
+            "message_prepare": b.prepare_message, "phone_execute_operation": b.execute,
         }
         return table[name](*[args[k] for k in PARAMS[name]])
 

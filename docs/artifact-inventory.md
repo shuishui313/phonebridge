@@ -71,7 +71,7 @@ ZIP 包含一个 `iphone_phone_bridge/` 目录与九个普通文件，解压后�
 
 | 项目 | v0.2 原型 | GitHub 历史基线 `4ff8df5` | v0.4 原包 |
 | --- | --- | --- | --- |
-| MCP | FastMCP stdio，8 个工具。`phone_open_app` 接收 `app_name`。 | 标准库 stdio，8 个工具。`phone_open_app(app_id)`、`wechat_prepare_message(text)`、`phone_execute_operation(operation_id)`。 | 标准库 stdio，12 个工具。增加 `phone_status`、`phone_tap`、`phone_swipe` 和 `phone_type_text`。对应签名为 `phone_open_app(app)`、`wechat_prepare_message(recipient_id, message)` 和 `phone_execute_operation(approval_id)`。 |
+| MCP | FastMCP stdio，8 个工具。`phone_open_app` 接收 `app_name`。 | 标准库 stdio，8 个工具。`phone_open_app(app_id)`、`wechat_prepare_message(text)`、`phone_execute_operation(operation_id)`。 | 标准库 stdio，12 个工具。增加 `phone_status`、`phone_tap`、`phone_swipe` 和 `phone_type_text`。对应签名为 `phone_open_app(app)`、`wechat_prepare_message(recipient_id, message)` 和 `phone_execute_operation(approval_id)`（后续通用化版本中 `wechat_prepare_message` 更名为 `message_prepare`，历史名称保留为可调用别名）。 |
 | 模拟状态 | 可注入 Mock Driver、校验坐标、限制文本、检查应用白名单，提供从观察到草稿的离线演示。 | 联系人精确匹配、重名消歧、聊天记录隔离、屏幕修订和并发防重。 | 新增输入焦点、文本草稿、显式校验草稿及收件人、审批有效期和元数据日志。 |
 | 审批与发送 | MCP 可提交确认标志，执行始终返回 `blocked`。 | `approvals` 通过本机 Unix 套接字批准或拒绝，模拟写入一次。 | `approvals` 通过本机 Unix 套接字批准或拒绝，先匹配草稿与会话，再单次写入。两版套接字均以操作系统账号为信任边界。 |
 | Python 测试 | 2 个模块，10 个 Mock 测试。 | 2 个模块，18 个模型或 stdio 子进程测试。 | 5 个模块，覆盖 52 个审批、Mock、MCP、假 `simctl` 和跨进程工作流用例。 |

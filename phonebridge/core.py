@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .drivers import MockIPhone, fail
+from .drivers import MESSAGING_APP, MockIPhone, fail
 
 
 def normalized_coordinates(*coordinates):
@@ -128,20 +128,23 @@ class PhoneBridge:
         with self._lock:
             if not getattr(self.driver, "simulated", False) or not getattr(self.driver, "send_enabled", False):
                 return fail("real_message_sending_disabled")
-            if self.driver.app != "wechat" or self.driver.screen != "chat" or self.driver.selected_id != recipient_id:
+            resolver = getattr(self.driver, "resolve_contact_id", None)
+            canonical_id = resolver(recipient_id) if callable(resolver) else recipient_id
+            if (self.driver.app != MESSAGING_APP or self.driver.screen != "chat"
+                    or self.driver.selected_id != canonical_id or canonical_id is None):
                 return fail("recipient_not_verified_in_current_chat")
             if self.driver.input_text != message:
                 return fail("draft_mismatch", expected_chars=len(self.driver.input_text))
-            recipient = next((c for c in self.driver.contacts if c["id"] == recipient_id), None)
+            recipient = next((c for c in self.driver.contacts if c["id"] == canonical_id), None)
             if not recipient:
                 return fail("recipient_not_found")
             op_id = secrets.token_urlsafe(24)
-            self.proposals[op_id] = Proposal(op_id, recipient_id, recipient["name"], message,
+            self.proposals[op_id] = Proposal(op_id, canonical_id, recipient["name"], message,
                                              self.driver.revision, self.clock())
             return self._audit("prepare_message", {"ok": True, "approval_id": op_id,
-                "recipient_name": recipient["name"], "recipient_id": recipient_id,
+                "recipient_name": recipient["name"], "recipient_id": canonical_id,
                 "message_length": len(message), "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
-                "approved": False, "simulated": True, "real_message_sent": False}, recipient_id=recipient_id)
+                "approved": False, "simulated": True, "real_message_sent": False}, recipient_id=canonical_id)
 
     def _is_current(self, p: Proposal):
         return (0 <= self.clock() - p.created_at <= self.ttl and

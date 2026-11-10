@@ -16,10 +16,10 @@ final class PhoneBridgeFixtureUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.navigationBars["PhoneBridge"].waitForExistence(timeout: 12))
         openWhatsAppFixture(app)
-        let contact = app.buttons["contact.xiaoming-01"]
+        let contact = app.buttons["contact.contact-02"]
         XCTAssertTrue(contact.waitForExistence(timeout: 8))
         contact.tap()
-        XCTAssertTrue(app.navigationBars["小明"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Casey"].waitForExistence(timeout: 8))
         let input = app.textFields["chat.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 8))
         input.tap()

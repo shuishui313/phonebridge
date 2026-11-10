@@ -22,7 +22,7 @@ printf '%s\n' "$PHONEBRIDGE_SOCKET"
 
 ## 发送一条模拟消息
 
-1. 在 Hark 打开的 Codex 会话中输入「用 `phonebridge-v04` 打开模拟微信，给 `test-01` 拟一条『测试消息』，等我在另一个终端批准。批准后执行一次，再回读模拟聊天记录。」
+1. 在 Hark 打开的 Codex 会话中输入「用 `phonebridge-v04` 打开合成私信场景，给 `contact-01` 拟一条『测试消息』，等我在另一个终端批准。批准后执行一次，再回读合成聊天记录。」
 2. 在同一主机的另一个终端中，从仓库根目录运行以下命令。把 `PHONEBRIDGE_SOCKET` 设为上一节输出的路径，核对审批列表中的联系人 ID 和正文，再输入实际审批 ID。需要取消时用 `approvals deny`。
 
    ```sh

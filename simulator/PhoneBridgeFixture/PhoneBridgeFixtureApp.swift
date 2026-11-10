@@ -47,8 +47,8 @@ struct FixtureRootView: View {
 
 struct FixtureChatListView: View {
     private let contacts: [FixtureContact] = [
-        .init(id: "test-01", name: "测试联系人"),
-        .init(id: "xiaoming-01", name: "小明"),
+        .init(id: "contact-01", name: "Test Contact"),
+        .init(id: "contact-02", name: "Casey"),
         .init(id: "alex-01", name: "Alex"),
         .init(id: "alex-02", name: "Alex")
     ]

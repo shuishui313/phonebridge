@@ -9,13 +9,16 @@ from .approvals import ApprovalEndpoint, approval_request
 from .core import PhoneBridge
 from .drivers import AppleSimulatorDriver, MockIPhone
 from .mcp_v04 import MCPServer
+from .xcode_mcp import XcodeMCPDriver
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="phonebridge")
     p.add_argument("--approval-socket", help="Private Unix approval socket; parent directory MUST have chmod 700")
-    p.add_argument("--driver", choices=["mock", "simctl"], default="mock")
-    p.add_argument("--sim-udid", help="Apple Simulator UDID for read-only simctl driver")
+    p.add_argument("--driver", choices=["mock", "simctl", "xcode-mcp"], default="mock")
+    p.add_argument("--sim-udid", help="Apple Simulator UDID for device drivers")
+    p.add_argument("--allow-xcode-interactions", action="store_true",
+                   help="Human opt-in at process start: allow tap/swipe/type/home through Xcode MCP")
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
@@ -35,10 +38,19 @@ def main(argv=None):
             return 2
         print(json.dumps(response, ensure_ascii=False, indent=2))
         return 0 if response.get("ok") else 1
-    if args.driver == "simctl" and not args.sim_udid:
-        p.error("--sim-udid required when --driver simctl")
+    if args.driver in ("simctl", "xcode-mcp") and not args.sim_udid:
+        p.error(f"--sim-udid required when --driver {args.driver}")
+    if args.allow_xcode_interactions and args.driver != "xcode-mcp":
+        p.error("--allow-xcode-interactions requires --driver xcode-mcp")
+    driver = None
     try:
-        driver = MockIPhone() if args.driver == "mock" else AppleSimulatorDriver(args.sim_udid)
+        if args.driver == "mock":
+            driver = MockIPhone()
+        elif args.driver == "simctl":
+            driver = AppleSimulatorDriver(args.sim_udid)
+        else:
+            driver = XcodeMCPDriver(args.sim_udid,
+                                    interaction_approved=args.allow_xcode_interactions)
         bridge = PhoneBridge(driver, audit_path=args.audit_path)
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket):
@@ -50,6 +62,10 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         print(f"PhoneBridge: {exc}", file=sys.stderr)
         return 1
+    finally:
+        close = getattr(driver, "close", None)
+        if callable(close):
+            close()
     return 0
 
 

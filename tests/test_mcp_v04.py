@@ -65,13 +65,21 @@ class MCPTests(unittest.TestCase):
 
     def test_tool_flow(self):
         self.initialize()
-        self.assertTrue(self.call("phone_open_app", app="wechat")["ok"])
-        self.assertEqual(self.call("wechat_open_chat", contact="小明")["contact"]["id"], "xiaoming-01")
+        self.assertTrue(self.call("phone_open_app", app="messaging")["ok"])
+        self.assertEqual(self.call("contacts_open", contact="Casey")["contact"]["id"], "contact-02")
         self.assertTrue(self.call("phone_tap", x=.5, y=.9)["ok"])
         self.assertTrue(self.call("phone_type_text", text="你好")["ok"])
-        draft = self.call("wechat_prepare_message", recipient_id="xiaoming-01", message="你好")
+        draft = self.call("message_prepare", recipient_id="contact-02", message="你好")
         self.assertTrue(draft["ok"])
         self.assertEqual(self.call("phone_execute_operation", approval_id=draft["approval_id"])["error"], "independent_approval_required")
+
+    def test_legacy_tool_aliases_are_callable_but_not_advertised(self):
+        self.initialize()
+        names = {t["name"] for t in self.request("tools/list", {})["result"]["tools"]}
+        self.assertNotIn("wechat_prepare_message", names)
+        self.assertTrue(self.call("phone_open_app", app="wechat")["ok"])
+        self.assertEqual(len(self.call("wechat_list_contacts")["contacts"]), 4)
+        self.assertEqual(self.call("wechat_open_chat", contact="小明")["contact"]["id"], "contact-02")
 
     def test_stream_responds_to_requests(self):
         self.initialize(notify=False)

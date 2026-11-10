@@ -16,11 +16,11 @@ class ApprovalSocketTests(unittest.TestCase):
         self.path = str(Path(self.t.name) / "approval.sock")
         self.b = PhoneBridge()
         self.endpoint = ApprovalEndpoint(self.b, self.path).start()
-        self.b.open_app("wechat")
-        self.b.open_chat("test-01")
+        self.b.open_app("messaging")
+        self.b.open_chat("contact-01")
         self.b.tap(.5, .9)
         self.b.type_text("hello")
-        self.op = self.b.prepare_message("test-01", "hello")["approval_id"]
+        self.op = self.b.prepare_message("contact-01", "hello")["approval_id"]
 
     def tearDown(self):
         self.endpoint.close()
@@ -32,7 +32,7 @@ class ApprovalSocketTests(unittest.TestCase):
     def test_list_preview(self):
         p = approval_request(self.path, "list")
         self.assertEqual(p["proposals"][0]["message"], "hello")
-        self.assertEqual(p["proposals"][0]["recipient_id"], "test-01")
+        self.assertEqual(p["proposals"][0]["recipient_id"], "contact-01")
 
     def test_approve_and_execute(self):
         self.assertTrue(approval_request(self.path, "approve", self.op)["approved"])

@@ -4,11 +4,11 @@
 
 v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0.4 使用 `python3 -m phonebridge.cli` 或安装后的 `phonebridge`，v0.3 保留原命令和协议，v0.2 可独立重跑。Python、MCP、审批、SwiftUI、XCUITest 与 XcodeGen 源码均在仓库。原始归档和每个成员的 SHA-256 见 [资产清单](docs/artifact-inventory.md)。
 
-本次重跑的结果与未验证项见 [测试报告](docs/test-report.md)。以下正文保留原产品方案和历史快照，其中 v0.4 未取得、未合并的说法描述的是当时的状态。
+本次重跑的结果与未验证项见 [测试报告](docs/test-report.md)。当前测试目标 App 为自有合成夹具中的私信与信息流场景（对标 WhatsApp 与 X 的交互形态），v0.4 工具名已通用化为 `contacts_list` / `contacts_open` / `message_prepare`，旧名保留为可调用别名；正文和附录中提及「微信」或 `wechat_*` 的地方均为历史快照描述。[产品需求](docs/product-requirements.md) · [安全边界](docs/security.md)
 
 ### 下一阶段
 
-1. [测试报告](docs/test-report.md) 记录了 SwiftUI 启动、两项 XCUITest 和 simctl 诊断验证。用 [Apple Xcode MCP](docs/ios-feasibility.md#xcode-mcp-的开发用途) 在独立开发会话验证 Codex 是否能观察并操作自有测试 App，再决定复用该接口或实现专用 XCTest 桥。接入 PhoneBridge 时仍需验证独立审批和结果回读。
+1. [测试报告](docs/test-report.md) 记录了 SwiftUI 启动、三项 XCUITest、simctl 诊断和 Apple 官方 `XcodeMCPDriver` 的实测。官方接口已能观察并操作系统 App，已包装为 PhoneBridge 驱动，XCTest 桥保留为 CI 回归与回退方案。下一步在开发用 Codex 会话注册 `--driver xcode-mcp`，验证经 MCP 的完整 `观察 → 规划 → 操作 → 回读` 闭环、独立审批和结果回读。CI 仍以固定 XCUITest 为准。
 2. 在受控主机上用 Hark 经 SSH 打开 Codex，按 [Hark 接入步骤](docs/hark-codex.md) 跑一次合成任务。分别验证连接中断、结果回读和重连后的防重。
 3. 上层 Agent 补齐任务时限、动作预算、有限重试和断线恢复。只重试已确认无副作用的动作。执行结果不明确时，先回读，再决定是否停止。实际设备接入前将审批移至 Agent 无法访问的独立通道。
 4. 真机、真实第三方 App 和本机运行仍是独立的可行性阶段。仅在用户另行决定后进入真机验证，保持金融与支付操作默认禁用。[iOS 可行性](docs/ios-feasibility.md)

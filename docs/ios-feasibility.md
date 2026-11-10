@@ -14,7 +14,7 @@ PhoneBridge 第一阶段以 iPhone 和 iOS 27 为目标。测试目标分三层�
 
 | 通道 | 方式 | 典型场景 | 依赖 | 边界 |
 | --- | --- | --- | --- | --- |
-| A · 意图通道 | App Intents / 快捷指令，调用系统或 App 显式公开的动作 | 「给妈妈发短信说我不回家吃饭」→ 系统「发送信息」动作 | 本机即可运行；Mac 上可用 `shortcuts run` 触发 | 只能做被公开的动作；微信等 App 几乎不公开此类接口，未验证 |
+| A · 意图通道 | App Intents / 快捷指令，调用系统或 App 显式公开的动作 | 「给妈妈发短信说我不回家吃饭」→ 系统「发送信息」动作 | 本机即可运行；Mac 上可用 `shortcuts run` 触发 | 只能做被公开的动作；多数第三方私信 App 不公开此类接口，未验证 |
 | B · 设备接管通道 | 通用 UI 接管：观察屏幕 → 合成点击/滑动/输入 → 回读验证 | 操作任意 App 的任意界面 | iOS 27+ 可走 Xcode 官方 mcpbridge / Device Hub 协议；iOS 17.4–26 社区用 WebDriverAgent 自签 Helper | 需 USB 配对、开发者模式等设置；真机阶段另行授权 |
 
 路由原则：能用 A 就不用 B（更稳、更快、不依赖 UI 变化）；A 不可用时才走 B。两条通道统一经过 PhoneBridge 的审批、验证、预算与审计层，Agent 入口不变。
@@ -34,9 +34,9 @@ PhoneBridge 第一阶段以 iPhone 和 iOS 27 为目标。测试目标分三层�
 
 ## 第三方 App 的权限边界
 
-iOS 将第三方 App 隔离在各自的沙盒内。通过普通公开 API 安装的 PhoneBridge App 无法任意读取其他 App 的数据，也无法任意注入触控或读取它们的界面。当前模拟微信里的联系人、草稿和消息均为项目夹具。自有 App 或 Apple Simulator 中通过的测试无法证明真实微信具备相同能力。[Apple 平台安全指南](https://support.apple.com/en-sg/guide/security/sec15bfe098e/web)
+iOS 将第三方 App 隔离在各自的沙盒内。通过普通公开 API 安装的 PhoneBridge App 无法任意读取其他 App 的数据，也无法任意注入触控或读取它们的界面。当前合成私信场景里的联系人、草稿和消息均为项目夹具。自有 App 或 Apple Simulator 中通过的测试无法证明真实第三方 App 具备相同能力。[Apple 平台安全指南](https://support.apple.com/en-sg/guide/security/sec15bfe098e/web)
 
-App Intents 和快捷指令只提供 App 或系统明确公开的操作。若考虑接入第三方 App，应先确认它公开了哪些操作，再逐项验证可用参数、用户交互及结果回读。对微信的搜索联系人、填草稿、发送和校验均未做此类验证。[Apple App Intents 文档](https://developer.apple.com/documentation/appintents)
+App Intents 和快捷指令只提供 App 或系统明确公开的操作。若考虑接入第三方 App，应先确认它公开了哪些操作，再逐项验证可用参数、用户交互及结果回读。对目标私信与信息流 App 的搜索联系人、填草稿、发布和校验均未做此类验证。[Apple App Intents 文档](https://developer.apple.com/documentation/appintents)
 
 Xcode 的 XCTest 与 XCUIAutomation 可用于验证自有 App 的 UI。先用 iOS 27 的 iPhone Simulator 验证自有测试 App，记录 Xcode 版本、运行时、设备型号和测试结果。仓库提供首屏生命周期检查和测试 App 的联系人与聊天流程，执行方法见 [Apple Simulator 验证步骤](apple-simulator.md)。[Apple Xcode 测试文档](https://developer.apple.com/documentation/xcode/testing)
 
@@ -48,4 +48,4 @@ Xcode 的 XCTest 与 XCUIAutomation 可用于验证自有 App 的 UI。先用 iO
 
 Apple 为外部 Codex 提供 `xcrun mcpbridge`。安装完整 Xcode 后，可在 Xcode 的 Intelligence 设置中允许外部 Agent 使用工具，打开生成的 PhoneBridgeFixture 工程，再在开发用 Codex 会话中注册 `codex mcp add xcode -- xcrun mcpbridge`。Claude Code 市场的 Xcode 插件由 Apple Inc. 提供，入口链接本机 Xcode 自带的插件。两者可用于构建、SwiftUI 预览和诊断，Xcode 27 还演示了在自有 App 的 Simulator 上观察无障碍树和截图，以及点击、滑动和输入。[Apple 外部 Agent 指南](https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode) · [Apple Simulator 演示](https://developer.apple.com/videos/play/wwdc2026/8121/?time=1956) · [Claude Code 市场条目](https://github.com/anthropics/claude-plugins-official/pull/6338/files)
 
-先在独立开发会话试跑一次 `观察 → 按稳定 ID 找合成联系人 → 输入 → 回读草稿`。确认外部 Codex 能发现并调用所需工具后，再评估是否用它实现自有测试 App 的实时 Simulator 适配，或继续使用专用 XCTest 桥。CI 以固定的 XCUITest 保留回归证据。将开发工具留在独立会话，Hark 执行侧通过 PhoneBridge 保持审批约束。Mac 开发环境中连接自有测试 App 的能力，与 iPhone 上第三方 App 的权限分别验收。[测试报告](test-report.md) · [iOS 运行时安全](https://support.apple.com/en-ie/guide/security-pdf/sec15bfe098e/1/web/1)
+先在独立开发会话试跑一次 `观察 → 按稳定 ID 找合成联系人 → 输入 → 回读草稿`。确认外部 Codex 能发现并调用所需工具后，再评估是否用它实现自有测试 App 的实时 Simulator 适配，或继续使用专用 XCTest 桥。CI 以固定的 XCUITest 保留回归证据。将开发工具留在独立会话，Hark 执行侧通过 PhoneBridge 保持审批约束。`xcrun mcpbridge` 是 Mac 侧开发工具，依赖本机完整 Xcode 与其后台服务，**不代表「只在 iPhone 本机运行」目标取得进展**；该目标仍按 [产品需求](product-requirements.md) 单独规划。PhoneBridge 已将官方能力包装为 `XcodeMCPDriver`，仅使用设备交互与诊断工具白名单，改变设备状态的操作默认拒绝，需操作者在启动服务的受控终端显式开启，详见 [安全边界](security.md)。Mac 开发环境中连接自有测试 App 的能力，与 iPhone 上第三方 App 的权限分别验收。[测试报告](test-report.md) · [iOS 运行时安全](https://support.apple.com/en-ie/guide/security-pdf/sec15bfe098e/1/web/1)

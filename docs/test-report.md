@@ -15,7 +15,7 @@
 | GitHub Actions · Python | Ubuntu 的 Python 3.10 和 3.13 均成功安装 CLI，各通过 79 项整合测试和 10 项 v0.2 测试，0 失败，0 跳过。历史 FastMCP 冒烟按配置只在 3.10 作业运行且通过。[CI 运行记录](https://github.com/shuishui313/phonebridge/actions/runs/42773456200) |
 | GitHub Actions · Apple Simulator | Xcode 27.1（27A9275），iPhone 18 Pro Simulator，iOS 27.0。首轮首屏冒烟通过，两个 UI 测试中一个超时。修正 SwiftUI 无障碍标识后，首屏冒烟和两项 XCUITest 全通过。[首轮](https://github.com/shuishui313/phonebridge/actions/runs/42773418532) · [通过的重跑](https://github.com/shuishui313/phonebridge/actions/runs/42774343133) |
 | Apple Xcode MCP | 本机 Xcode 27.2 包含 `mcpbridge`，导出的 Claude 插件配置指向同一个命令。已开启 Xcode Intelligence 的 MCP 权限并完成 stdio 握手，枚举出 54 个工具，含设备交互类；详细结果见下节。独立的 XCUITest 和 PhoneBridge 的 MCP 运行证据分别见本表。 |
-| Hark、真机与真实微信 | 未运行。本次验证未连接实体 iPhone 或真实微信。 |
+| Hark、真机与真实第三方 App | 未运行。本次验证未连接实体 iPhone 或真实第三方 App。 |
 
 ## 2026-11-10 晚间补充 · 本机 Apple Simulator 实测
 
@@ -24,7 +24,7 @@
 | 验证项 | 实际结果 |
 | --- | --- |
 | `scripts/simctl-preflight.sh` | 通过。xcodebuild 27.2、simctl 可用、设备列表正常。 |
-| `scripts/apple-simulator-test.sh` | `APPLE SIMULATOR XCTEST PASS`。两项 XCUITest 通过（0 失败）：同名联系人标识区分、从"小明"聊天输入并发送并读回。结果包在 `build/ios-ui.*/PhoneBridgeUITests.xcresult`。 |
+| `scripts/apple-simulator-test.sh` | `APPLE SIMULATOR XCTEST PASS`。两项 XCUITest 通过（0 失败）：同名联系人标识区分、从合成联系人聊天输入并发送并读回。结果包在 `build/ios-ui.*/PhoneBridgeUITests.xcresult`。 |
 | `scripts/simulator-smoke.sh` | 通过。夹具 App 在真实 Simulator 上启动并写出 `onAppear` 标记。 |
 | simctl Driver 直调 | `AppleSimulatorDriver.status()` 正确返回 Booted 的 iPhone 18 Pro。`open_app("fixture")` 启动夹具成功。`observe()` 截图成功并返回本地路径与 SHA-256。 |
 | 修复记录 | 首次运行因 XcodeGen 2.46.0 + Xcode 27 生成的工程缺少 `PRODUCT_NAME` 而构建失败（"Multiple commands produce '.app'"）。在 `simulator/project.yml` 的 `settings.base` 显式加 `PRODUCT_NAME: $(TARGET_NAME)` 后通过。 |
@@ -45,6 +45,17 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 | 非自有 App 实测 · 通过 | 在已启动的 iPhone 18 Pro Simulator 上：`DeviceInteractionStartSession` 成功建立会话；`DeviceInteractionSynthesize` 以 `activationBundleId=com.apple.Preferences` 激活**系统「设置」App**（非项目自有 App），合成点击 `t 38 84` 后截图 SHA-256 发生变化，UI 层级与截图均正确返回（`hierarchyPath`/`screenshotPath`）。证明官方通道可在 Simulator 上激活并操作非自有 App 并读回界面状态。 |
 | 结论 | 通道 B（设备接管）在 Simulator 上有官方入口。可将 `mcpbridge` 包装为 PhoneBridge 的设备 Driver，沿用现有审批、验证与审计层；CI 回归仍以固定 XCUITest 为准。物理 iPhone 与真实第三方 App 未验证，`Synthesize` 描述虽含物理设备，真机能力仍按用户另行授权单独验收。 |
 
+## 2026-11-10 追加 · 通用命名与官方 Xcode MCP 驱动
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| v0.4 通用命名 | 工具改为 `contacts_list` / `contacts_open` / `message_prepare`，Mock 场景为 `messaging`，合成联系人为 `contact-01` / `contact-02` / 两个同名 Alex。三个历史工具名与旧应用、联系人别名仍可调用，但不出现在 `tools/list`；v0.3 入口与 8 工具协议未改动。 |
+| Python 测试 | 95 通过，0 失败。含 14 项新增 `XcodeMCPDriver` 单元测试、真实 stdio 子进程中通用名与旧别名混合调用。v0.2 归档 10 项通过。 |
+| Simulator XCUITest | 三项全过（0 失败），`APPLE SIMULATOR XCTEST PASS`，联系人改名后回归通过。 |
+| `XcodeMCPDriver` 本机实测 | 通过真实 `xcrun mcpbridge` 验证：`status` 正确披露边界；`observe` 返回本地截图 SHA-256 与 UI 层级路径；`open_app("fixture")` 激活后层级文件显示前台为 `org.example.phonebridge.fixture`；显式开启交互后 `tap` 转换 0–1 坐标为官方 `t 36 87` 命令并返回截图与层级。 |
+| 安全闸门 | 仅允许 6 个设备交互／诊断工具；`tap` / `swipe` / `type_text` / `home` 默认返回 `independent_approval_required`，需操作者在启动服务的受控终端传入 `--allow-xcode-interactions`，不是 MCP 工具；发送消息始终禁用；不支持的方法不触达官方桥。`applicationState: NotRun` 是 Xcode 会话字段，前台 App 以 UI 层级为准。 |
+| CLI stdio 端到端 | `python3 -m phonebridge.cli --driver xcode-mcp --sim-udid <UDID> serve` 真实子进程：`initialize` 成功、`tools/list` 12 个工具、`phone_status` 返回 `xcode-mcp`、`phone_tap` 默认拒绝 `independent_approval_required`、`message_prepare` 返回 `real_message_sending_disabled`、`phone_inspect` 成功返回截图 SHA-256 与 UI 层级路径，进程正常退出。 |
+
 ## 重跑自动测试
 
 从仓库根目录运行。
@@ -64,6 +75,6 @@ python3 -m venv .venv
 
 原始 ZIP 可按 [资产清单](artifact-inventory.md) 核对 SHA-256。分别在安全解压后的 v0.4 目录和干净的 `4ff8df5` 检出中运行 `python3 -m unittest discover -s tests -v` 可重跑两条历史基线。
 
-v0.4 的进程测试通过真实 stdio 发现工具，从 Mock 的小明聊天生成提案，确认审批前执行被拒绝。再经独立 CLI 批准、写入一次并拒绝重放，回读同一聊天只有一条匹配记录。另一项测试省略审批套接字并确认全程没有写入记录。相同工作流的 Codex 手动复验步骤见 [README](../README.md)。
+v0.4 的进程测试通过真实 stdio 发现工具，从 Mock 的合成联系人聊天生成提案，确认审批前执行被拒绝。再经独立 CLI 批准、写入一次并拒绝重放，回读同一聊天只有一条匹配记录。另一项测试省略审批套接字并确认全程没有写入记录。相同工作流的 Codex 手动复验步骤见 [README](../README.md)。
 
 `tests/test_simctl.py` 的九项使用注入的进程替身验证驱动契约，包括模拟器设备枚举、夹具启动、截图权限与失败清理。使用完整 Xcode 的独立 SwiftUI 和 XCUITest 验证见 [Apple Simulator 步骤](apple-simulator.md)。

@@ -1,6 +1,6 @@
 # PhoneBridge
 
-PhoneBridge 是供 Codex 和其他 Agent 使用的 iPhone 操作接口。当前的 v0.4 提供可运行的 Python 虚拟手机、12 个 stdio MCP 工具和独立终端审批。消息只写入合成聊天记录。Apple Simulator 另有 SwiftUI 测试 App、XCUITest 与受限诊断驱动。
+PhoneBridge 是供 Hark、Codex 等 Agent App 接入的 iPhone 操作能力，也规划自带对话入口的独立 App（[产品需求](docs/product-requirements.md)）。当前 v0.4 提供 Python 虚拟手机、12 个 stdio MCP 工具、独立终端审批和 Apple 官方 Xcode MCP 驱动。消息只写入合成记录；测试 App 为私信与信息流两个自有合成场景。
 
 ## 快速开始
 
@@ -30,7 +30,7 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
 
 ## 试一次模拟发送
 
-1. 在 Codex 中输入「打开模拟微信，找到小明，拟一条『今天测试成功』，等待我审批」。Agent 打开 `xiaoming-01` 会话，聚焦输入框并录入正文，再提交审批提案。同名联系人须先选定固定 ID。
+1. 在 Codex 中输入「打开合成私信场景，找到 Casey，拟一条『今天测试成功』，等待我审批」。Agent 打开 `contact-02` 会话，聚焦输入框并录入正文，再提交审批提案。同名联系人须先选定固定 ID。
 2. 在另一个可信终端中进入仓库根目录，将 `PHONEBRIDGE_SOCKET` 设为注册时的实际路径。核对收件人 ID 和正文，再用实际审批 ID 批准。也可以用 `deny` 拒绝。
 
    ```sh
@@ -45,13 +45,15 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
 | MCP 工具 | Mock 行为 |
 | --- | --- |
 | `phone_status`、`phone_inspect` | 读取驱动能力、页面、当前联系人和模拟记录 |
-| `phone_open_app(app)` | 打开 `wechat` 或 `settings` |
+| `phone_open_app(app)` | 打开 `messaging` 或 `settings`；`wechat` 作为历史别名仍可调用 |
 | `phone_home`、`phone_back` | 返回上一级或主屏幕 |
 | `phone_tap(x, y)`、`phone_swipe(start_x, start_y, end_x, end_y)` | 用 0–1 坐标操作合成界面，聊天输入区为 `y >= 0.82` |
 | `phone_type_text(text)` | 将文本追加到已聚焦的输入框 |
-| `wechat_list_contacts`、`wechat_open_chat(contact)` | 列出合成联系人，按精确名称或固定 ID 打开聊天 |
-| `wechat_prepare_message(recipient_id, message)` | 校验当前联系人与已录入的正文，生成待审批提案 |
+| `contacts_list`、`contacts_open(contact)` | 列出合成联系人，按精确名称或固定 ID 打开聊天 |
+| `message_prepare(recipient_id, message)` | 校验当前联系人与已录入的正文，生成待审批提案 |
 | `phone_execute_operation(approval_id)` | 单次执行仍有效且已批准的模拟操作 |
+
+`wechat_list_contacts`、`wechat_open_chat`、`wechat_prepare_message` 作为历史别名继续可调用，但不出现在 `tools/list` 中。v0.3 入口 `run_phonebridge.py` 保持原有 8 工具协议不变。
 
 ## Apple Simulator 和 iPhone
 
@@ -63,7 +65,16 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
 python3 -m phonebridge.cli --driver simctl --sim-udid '<SIMULATOR_UDID>' serve
 ```
 
-XCUITest 在自有 SwiftUI App 内验证界面交互。MCP 的 `simctl` 驱动只支持选定模拟器的状态、启动测试夹具和本地截图。普通 iOS App 受系统沙箱约束，通用跨 App 控制、真实微信发送和实体 iPhone 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
+XCUITest 在自有 SwiftUI App 内验证私信与信息流两个合成场景。`simctl` 驱动只支持状态、启动夹具和本地截图。
+
+`xcode-mcp` 驱动接入 Apple 官方 `xcrun mcpbridge`，只使用 6 个设备交互／诊断工具白名单：
+
+```sh
+python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serve
+# 需要受控交互时，由操作者在可信终端显式追加：--allow-xcode-interactions
+```
+
+状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 ## 历史版本与开发
 

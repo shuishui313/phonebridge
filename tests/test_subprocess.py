@@ -89,7 +89,8 @@ class SubprocessTests(unittest.TestCase):
         send("notifications/initialized", notification=True)
         names = {tool["name"] for tool in send("tools/list")["tools"]}
         self.assertEqual(len(names), 12)
-        self.assertIn("wechat_prepare_message", names)
+        self.assertIn("message_prepare", names)
+        self.assertNotIn("wechat_prepare_message", names)
         self.assertNotIn("approval_approve", names)
 
         def tool(name, **arguments):
@@ -98,14 +99,18 @@ class SubprocessTests(unittest.TestCase):
         return tool
 
     def prepare_message(self, tool):
+        self.assertTrue(tool("phone_open_app", app="messaging")["ok"])
+        # Historical tool names remain callable over a real stdio process.
+        self.assertEqual(len(tool("wechat_list_contacts")["contacts"]), 4)
+        self.assertEqual(tool("wechat_open_chat", contact="小明")["contact"]["id"], "contact-02")
+        self.assertTrue(tool("phone_back")["ok"])
+        self.assertEqual(tool("contacts_open", contact="Casey")["contact"]["id"], "contact-02")
         for result in (
-            tool("phone_open_app", app="wechat"),
-            tool("wechat_open_chat", contact="小明"),
             tool("phone_tap", x=.5, y=.9),
             tool("phone_type_text", text="今天测试成功"),
         ):
             self.assertTrue(result["ok"], result)
-        proposal = tool("wechat_prepare_message", recipient_id="xiaoming-01", message="今天测试成功")
+        proposal = tool("message_prepare", recipient_id="contact-02", message="今天测试成功")
         self.assertTrue(proposal["ok"], proposal)
         return proposal["approval_id"]
 
