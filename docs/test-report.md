@@ -39,8 +39,9 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 的结论已沉淀，后
 | --- | --- |
 | 工具枚举 | `tools/list` 返回 54 个工具：构建／测试（`BuildProject`、`RunAllTests` 等）、项目文件读写、预览渲染、诊断日志、文档搜索，以及设备交互五件套。 |
 | 设备交互类 | `DeviceInteractionStartSession`（无 workspace，按 UDID 寻找并启动设备）、`DeviceInteractionInstallAndRun`、`DeviceInteractionSynthesize`、`DeviceInteractionEndSession`。`Synthesize` 描述为在物理设备或模拟器上合成 tap、swipe、type、硬件按键与方向变化，每次执行后返回截图与 UI 层级文件路径；参数 `activationBundleId` 说明为「在任何交互前激活的 App 的 bundle ID」，未见仅限开发者自有 App 的字样。 |
-| 批准流程 | 首次工具调用要求先 `XcodeOpenWorkspace` 触发用户批准。从受限执行环境发起时 Xcode 报 "can't be put in front of the user for approval"，批准框无法弹出；已准备独立探测脚本（打开夹具工程 → 开会话 → 激活系统「设置」App 并点击 → 读回截图与层级），待在真实终端会话执行。 |
-| 待定结论 | 「激活任意 bundle ID 并合成事件」是否适用于非自有 App 尚未实测，不能据此宣称可控制第三方 App。若验证通过，评估将 `mcpbridge` 包装为 PhoneBridge 的设备 Driver 并沿用现有审批层；CI 回归仍以固定 XCUITest 为准。 |
+| 批准流程 | 首次工具调用要求先 `XcodeOpenWorkspace` 触发用户批准。从受限执行环境发起时 Xcode 报 "can't be put in front of the user for approval"，批准框无法弹出。最终通过真实终端执行 `sudo xcrun mcp-server enable --unsafe-always-allow-all-agents` 开启无头模式解决（仅本机开发验证用）；`xcrun mcp-server open <工程路径>` 可在无界面条件下打开 workspace。 |
+| 非自有 App 实测 · 通过 | 在已启动的 iPhone 18 Pro Simulator 上：`DeviceInteractionStartSession` 成功建立会话；`DeviceInteractionSynthesize` 以 `activationBundleId=com.apple.Preferences` 激活**系统「设置」App**（非项目自有 App），合成点击 `t 38 84` 后截图 SHA-256 发生变化，UI 层级与截图均正确返回（`hierarchyPath`/`screenshotPath`）。证明官方通道可在 Simulator 上激活并操作非自有 App 并读回界面状态。 |
+| 结论 | 通道 B（设备接管）在 Simulator 上有官方入口。可将 `mcpbridge` 包装为 PhoneBridge 的设备 Driver，沿用现有审批、验证与审计层；CI 回归仍以固定 XCUITest 为准。物理 iPhone 与真实第三方 App 未验证，`Synthesize` 描述虽含物理设备，真机能力仍按用户另行授权单独验收。 |
 
 ## 重跑自动测试
 
