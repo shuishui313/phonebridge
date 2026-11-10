@@ -56,6 +56,20 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 | 安全闸门 | 仅允许 6 个设备交互／诊断工具；`tap` / `swipe` / `type_text` / `home` 默认返回 `independent_approval_required`，需操作者在启动服务的受控终端传入 `--allow-xcode-interactions`，不是 MCP 工具；发送消息始终禁用；不支持的方法不触达官方桥。`applicationState: NotRun` 是 Xcode 会话字段，前台 App 以 UI 层级为准。 |
 | CLI stdio 端到端 | `python3 -m phonebridge.cli --driver xcode-mcp --sim-udid <UDID> serve` 真实子进程：`initialize` 成功、`tools/list` 12 个工具、`phone_status` 返回 `xcode-mcp`、`phone_tap` 默认拒绝 `independent_approval_required`、`message_prepare` 返回 `real_message_sending_disabled`、`phone_inspect` 成功返回截图 SHA-256 与 UI 层级路径，进程正常退出。 |
 
+## 2026-11-10 追加 · 步骤 0a 驱动准入
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| Simulator 双重校验 | 默认检查器调用 `xcrun simctl list devices available -j` 确认 UDID 属于可用模拟器；`DeviceInteractionStartSession` 返回的 `deviceIsSimulator` 必须为 `true`、`deviceUUID` 必须与请求 UDID 一致，否则分别返回 `device_type_unverified` / `device_identity_mismatch`。 |
+| 前台夹具校验 | 每次交互前重新捕获界面层级，解析首行 `Application bundle identifier`；只有等于 `org.example.phonebridge.fixture` 才允许点击、滑动、输入和 Home 键。`open_app` 激活后同样校验前台。 |
+| 状态新鲜度 | `Synthesize` 必须返回本次的 `hierarchyPath` 与 `screenshotPath`，缺失任一返回 `fresh_observation_unavailable`；不再复用上一次观察的坐标或层级。 |
+| 桥接超时与断线 | 握手和每次工具调用改用二进制 stdio + `select` 硬超时（默认 15 秒）；超时或连接关闭返回 `xcode_mcp_unavailable`，立即释放失效进程与会话，下次调用重新握手建会话。`--bridge-timeout` 可配置。 |
+| 单元测试 | `tests/test_xcode_mcp.py` 17 项通过，覆盖非 Simulator、前台变化（系统设置 App）、会话设备类型与 UDID 不符、桥接无响应、旧状态缺失、超时释放进程、断线后重建会话四类反例。Python 全套 98 项通过。 |
+| 真机 mcpbridge 实测 | `status` 初始 `preflight_passed: false`；`observe` 正确返回当前前台（SpringBoard / 系统设置）；`open_app("fixture")` 激活后前台为夹具，`tap` 生成 `t 38 84` 并通过；随后用另一会话把前台切到系统设置，再次 `tap` 返回 `foreground_app_not_allowlisted`。 |
+| CLI stdio 端到端 | `python3 -m phonebridge.cli --driver xcode-mcp --sim-udid <UDID> serve`：`tools/list` 12 项、`phone_status` 返回 `preflight_passed: false` 与 `bridge_timeout: 15.0`、`phone_inspect` 返回本次截图哈希和前台 bundle、默认 `phone_tap` 返回 `independent_approval_required`、`message_prepare` 返回 `real_message_sending_disabled`、`phone_open_app` 激活夹具成功，进程正常退出。 |
+
+以上仅为 Simulator 准入能力，真机与真实第三方 App 仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

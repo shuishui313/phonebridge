@@ -19,6 +19,10 @@ def main(argv=None):
     p.add_argument("--sim-udid", help="Apple Simulator UDID for device drivers")
     p.add_argument("--allow-xcode-interactions", action="store_true",
                    help="Human opt-in at process start: allow tap/swipe/type/home through Xcode MCP")
+    p.add_argument("--fixture-bundle", default="org.example.phonebridge.fixture",
+                   help="Allowlisted fixture bundle ID for the Xcode MCP driver")
+    p.add_argument("--bridge-timeout", type=float, default=15.0,
+                   help="Hard timeout in seconds for Xcode MCP handshake and calls")
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
@@ -50,7 +54,9 @@ def main(argv=None):
             driver = AppleSimulatorDriver(args.sim_udid)
         else:
             driver = XcodeMCPDriver(args.sim_udid,
-                                    interaction_approved=args.allow_xcode_interactions)
+                                    interaction_approved=args.allow_xcode_interactions,
+                                    fixture_bundle=args.fixture_bundle,
+                                    timeout=args.bridge_timeout)
         bridge = PhoneBridge(driver, audit_path=args.audit_path)
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket):

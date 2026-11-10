@@ -1,38 +1,73 @@
+import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from phonebridge.xcode_mcp import (
     ALLOWED_TOOLS, FIXTURE_BUNDLE, MCPBridgeClient, XcodeMCPDriver,
 )
 
 UDID = "9117E5FD-038E-4A8D-B262-C427F6F5B489"
+RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
 
 
 class FakeClient:
-    def __init__(self, hierarchy: str, screenshot: str, *, session_ok=True, synth_ok=True):
-        self.hierarchy = hierarchy
-        self.screenshot = screenshot
+    def __init__(self, root: Path, *, foreground_bundle=FIXTURE_BUNDLE, session_ok=True,
+                 device_is_simulator=True, device_uuid=UDID, synth_ok=True,
+                 fresh_paths=True, bridge_error=None):
+        self.root = root
+        self.foreground_bundle = foreground_bundle
         self.session_ok = session_ok
+        self.device_is_simulator = device_is_simulator
+        self.device_uuid = device_uuid
         self.synth_ok = synth_ok
+        self.fresh_paths = fresh_paths
+        self.bridge_error = bridge_error
+        self.capture_index = 0
         self.calls = []
         self.started = False
         self.closed = False
+
+    @property
+    def timeout(self):
+        return 15.0
+
+    def _observation(self):
+        self.capture_index += 1
+        hierarchy = self.root / f"hierarchy-{self.capture_index}.txt"
+        screenshot = self.root / f"screen-{self.capture_index}.png"
+        hierarchy.write_text(
+            f"Application bundle identifier: {self.foreground_bundle}\n"
+            " Window, {{0.0, 0.0}, {402.0, 874.0}}, hitPoint: {201.0, 437.0}\n"
+            "  Button, {{16.0, 62.0}, {44.0, 44.0}}, hitPoint: {38.0, 84.0}\n",
+            encoding="utf-8",
+        )
+        screenshot.write_bytes(f"synthetic screenshot {self.capture_index}".encode())
+        return str(hierarchy), str(screenshot)
 
     def start(self):
         self.started = True
 
     def call(self, name, arguments):
         self.calls.append((name, dict(arguments)))
+        if self.bridge_error:
+            return {"ok": False, "error": self.bridge_error}
         if name == "DeviceInteractionStartSession":
             if not self.session_ok:
                 return {"ok": False, "error": "simulator_not_found"}
-            return {"ok": True, "interactionSessionKey": "sess-1", "deviceIsSimulator": True}
+            return {"ok": True, "interactionSessionKey": "sess-1",
+                    "deviceIsSimulator": self.device_is_simulator,
+                    "deviceUUID": self.device_uuid}
         if name == "DeviceInteractionSynthesize":
             if not self.synth_ok:
                 return {"ok": False, "error": "xcode_tool_error"}
+            if not self.fresh_paths:
+                return {"ok": True, "applicationState": "Activated"}
+            hierarchy, screenshot = self._observation()
             return {"ok": True, "applicationState": "Activated",
-                    "screenshotPath": self.screenshot, "hierarchyPath": self.hierarchy}
+                    "screenshotPath": screenshot, "hierarchyPath": hierarchy}
         if name == "DeviceInteractionEndSession":
             return {"ok": True, "userMessage": "Session stopped"}
         return {"ok": False, "error": "unexpected_tool"}
@@ -45,20 +80,16 @@ class XcodeMCPTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="pb-xcode-mcp-")
         self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        self.hierarchy = str(root / "hierarchy.txt")
-        self.screenshot = str(root / "screen.png")
-        Path(self.hierarchy).write_text(
-            "Application bundle identifier: com.apple.Preferences\n"
-            " Window, {{0.0, 0.0}, {402.0, 874.0}}, hitPoint: {201.0, 437.0}\n"
-            "  Button, {{16.0, 62.0}, {44.0, 44.0}}, hitPoint: {38.0, 84.0}\n",
-            encoding="utf-8",
-        )
-        Path(self.screenshot).write_bytes(b"synthetic screenshot bytes")
-        self.client = FakeClient(self.hierarchy, self.screenshot)
+        self.root = Path(self.temp.name)
+        self.client = FakeClient(self.root)
+        self.checker_calls = []
+
+    def checker(self, udid):
+        self.checker_calls.append(udid)
+        return {"ok": True, "runtime": RUNTIME, "device_name": "iPhone 18 Pro"}
 
     def driver(self, **kw):
-        return XcodeMCPDriver(UDID, client=self.client, **kw)
+        return XcodeMCPDriver(UDID, client=self.client, simulator_checker=self.checker, **kw)
 
     def tool_calls(self, name):
         return [args for tool, args in self.client.calls if tool == name]
@@ -70,31 +101,65 @@ class XcodeMCPTests(unittest.TestCase):
         self.assertFalse(result["simulated"])
         self.assertFalse(result["real_device_connected"])
         self.assertFalse(result["interaction_approved"])
+        self.assertFalse(result["preflight_passed"])
+        self.assertEqual(result["fixture_bundle"], FIXTURE_BUNDLE)
         self.assertEqual(self.client.calls, [])
 
-    def test_udid_and_bundle_validation(self):
+    def test_invalid_configuration(self):
         with self.assertRaises(ValueError):
             XcodeMCPDriver("not-a-udid", client=self.client)
         with self.assertRaises(ValueError):
             XcodeMCPDriver(UDID, client=self.client, fixture_bundle="../escape")
+        with self.assertRaises(ValueError):
+            XcodeMCPDriver(UDID, client=self.client, timeout=0)
 
-    def test_observe_captures_local_state(self):
-        result = self.driver().observe()
+    def test_observe_uses_fresh_state_and_verifies_simulator(self):
+        d = self.driver()
+        result = d.observe()
         self.assertTrue(result["ok"])
-        self.assertEqual(result["hierarchy_path"], self.hierarchy)
-        self.assertEqual(result["screenshot_path"], self.screenshot)
+        self.assertEqual(result["foreground_bundle"], FIXTURE_BUNDLE)
+        self.assertTrue(result["fixture_in_foreground"])
+        self.assertEqual(result["hierarchy_path"], str(self.root / "hierarchy-1.txt"))
         self.assertEqual(len(result["sha256"]), 64)
+        self.assertEqual(self.checker_calls, [UDID])
         self.assertEqual(self.tool_calls("DeviceInteractionSynthesize")[0]["interactionCommand"], "")
-        self.assertEqual(self.tool_calls("DeviceInteractionStartSession")[0]["deviceIdentifier"], UDID)
 
-    def test_open_app_allowlist_and_activation(self):
+    def test_non_simulator_target_is_rejected(self):
+        def reject(udid):
+            return {"ok": False, "error": "not_a_simulator", "udid": udid}
+        d = XcodeMCPDriver(UDID, client=self.client, simulator_checker=reject,
+                           interaction_approved=True)
+        self.assertEqual(d.observe()["error"], "not_a_simulator")
+        self.assertEqual(d.tap(.5, .5)["error"], "not_a_simulator")
+        self.assertEqual(self.client.calls, [])
+
+    def test_session_must_confirm_simulator_identity(self):
+        client = FakeClient(self.root, device_is_simulator=False)
+        self.assertEqual(XcodeMCPDriver(UDID, client=client,
+                                         simulator_checker=self.checker).observe()["error"],
+                         "device_type_unverified")
+        client = FakeClient(self.root, device_uuid="00000000-0000-0000-0000-000000000000")
+        self.assertEqual(XcodeMCPDriver(UDID, client=client,
+                                         simulator_checker=self.checker).observe()["error"],
+                         "device_identity_mismatch")
+
+    def test_open_app_allowlist_and_foreground_check(self):
         d = self.driver()
         self.assertEqual(d.open_app("bank")["error"], "app_not_allowlisted")
         self.assertEqual(self.client.calls, [])
         result = d.open_app("fixture")
         self.assertTrue(result["ok"])
+        self.assertEqual(result["foreground_bundle"], FIXTURE_BUNDLE)
         self.assertEqual(self.tool_calls("DeviceInteractionSynthesize")[0]["activationBundleId"], FIXTURE_BUNDLE)
-        self.assertEqual(result["revision"], 1)
+
+    def test_foreign_foreground_app_blocks_activation_and_interaction(self):
+        client = FakeClient(self.root, foreground_bundle="com.apple.Preferences")
+        d = XcodeMCPDriver(UDID, client=client, simulator_checker=self.checker,
+                            interaction_approved=True)
+        self.assertEqual(d.open_app("fixture")["error"], "foreground_app_not_allowlisted")
+        self.assertEqual(d.tap(.1, .1)["error"], "foreground_app_not_allowlisted")
+        commands = [a["interactionCommand"] for a in self.tool_calls("DeviceInteractionSynthesize")]
+        self.assertTrue(all(c == "" for c in commands))
 
     def test_mutating_interactions_require_human_enablement(self):
         d = self.driver()
@@ -103,31 +168,49 @@ class XcodeMCPTests(unittest.TestCase):
             self.assertEqual(result["error"], "independent_approval_required")
         self.assertEqual(self.client.calls, [])
 
-    def test_tap_uses_official_syntax_and_hierarchy_dimensions(self):
+    def test_tap_requires_fresh_observation_and_uses_official_syntax(self):
         d = self.driver(interaction_approved=True)
         result = d.tap(38 / 402, 84 / 874)
         self.assertTrue(result["ok"])
         commands = [c["interactionCommand"] for c in self.tool_calls("DeviceInteractionSynthesize")]
-        self.assertIn("t 38 84", commands)
-        self.assertEqual(result["interaction_command"], "t 38 84")
+        self.assertEqual(commands, ["", "t 38 84"])
+        self.assertEqual(result["foreground_bundle"], FIXTURE_BUNDLE)
 
-    def test_swipe_and_type_use_official_syntax(self):
+    def test_swipe_type_and_home_use_official_syntax(self):
         d = self.driver(interaction_approved=True)
         self.assertTrue(d.swipe(.5, .8, .5, .2)["ok"])
         self.assertTrue(d.type_text("Hello PhoneBridge")["ok"])
+        self.assertTrue(d.home()["ok"])
         commands = [c["interactionCommand"] for c in self.tool_calls("DeviceInteractionSynthesize")]
         self.assertIn("t 201 699 f 201 175 0.3", commands)
         self.assertIn("sender keyboard kbd Hello PhoneBridge", commands)
+        self.assertIn("b h", commands)
 
     def test_type_text_rejects_control_characters(self):
         d = self.driver(interaction_approved=True)
         self.assertEqual(d.type_text("line\nbreak")["error"], "unsupported_text_characters")
         self.assertEqual(d.type_text("back\\slash")["error"], "unsupported_text_characters")
 
-    def test_hardware_home_uses_button_command(self):
+    def test_missing_current_observation_fails_without_reusing_cache(self):
         d = self.driver(interaction_approved=True)
-        self.assertTrue(d.home()["ok"])
-        self.assertIn("b h", [c["interactionCommand"] for c in self.tool_calls("DeviceInteractionSynthesize")])
+        self.assertTrue(d.observe()["ok"])
+        self.client.fresh_paths = False
+        result = d.tap(.5, .5)
+        self.assertEqual(result["error"], "fresh_observation_unavailable")
+        self.assertEqual(d._last_hierarchy, str(self.root / "hierarchy-1.txt"))
+        commands = [c["interactionCommand"] for c in self.tool_calls("DeviceInteractionSynthesize")]
+        self.assertNotIn("t 201 437", commands)
+
+    def test_bridge_failure_invalidates_session(self):
+        d = self.driver(interaction_approved=True)
+        self.assertTrue(d.observe()["ok"])
+        self.client.bridge_error = "xcode_mcp_unavailable"
+        self.assertEqual(d.observe()["error"], "xcode_mcp_unavailable")
+        self.assertFalse(d._preflight_ok)
+        self.client.bridge_error = None
+        self.assertEqual(d.status()["preflight_passed"], False)
+        self.assertTrue(d.observe()["ok"])
+        self.assertEqual(len(self.tool_calls("DeviceInteractionStartSession")), 2)
 
     def test_unsupported_operations_never_reach_the_bridge(self):
         d = self.driver(interaction_approved=True)
@@ -135,17 +218,6 @@ class XcodeMCPTests(unittest.TestCase):
                        d.virtual_send("contact-02", "hi")):
             self.assertFalse(result["ok"])
         self.assertEqual(self.client.calls, [])
-
-    def test_screen_dimensions_missing_fails_closed(self):
-        Path(self.hierarchy).write_text("Application bundle identifier: com.apple.Preferences\n", encoding="utf-8")
-        d = self.driver(interaction_approved=True)
-        self.assertEqual(d.tap(.5, .5)["error"], "screen_dimensions_unavailable")
-
-    def test_session_start_failure_propagates(self):
-        client = FakeClient(self.hierarchy, self.screenshot, session_ok=False)
-        result = XcodeMCPDriver(UDID, client=client).observe()
-        self.assertEqual(result["error"], "simulator_not_found")
-        self.assertEqual(client.calls[0][0], "DeviceInteractionStartSession")
 
     def test_close_ends_session_once(self):
         d = self.driver()
@@ -161,6 +233,22 @@ class XcodeMCPTests(unittest.TestCase):
         for name in ("XcodeWrite", "BuildProject", "DeviceInteractionSynthesizeX"):
             self.assertEqual(client.call(name, {})["error"], "tool_not_allowlisted")
         self.assertEqual(len(ALLOWED_TOOLS), 6)
+
+    def test_official_client_times_out_and_releases_process(self):
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        self.addCleanup(os.close, write_fd)
+        proc = mock.Mock()
+        proc.stdin = io.BytesIO()
+        proc.stdout.fileno.return_value = read_fd
+        proc.wait.return_value = 0
+        client = MCPBridgeClient(popen=lambda *a, **k: proc, timeout=0.05)
+        with mock.patch("phonebridge.xcode_mcp.select.select", return_value=([], [], [])):
+            result = client.call("DeviceInteractionStartSession", {"deviceIdentifier": UDID})
+        self.assertEqual(result["error"], "xcode_mcp_unavailable")
+        self.assertIn("timed out", result["details"])
+        self.assertIsNone(client._proc)
+        proc.terminate.assert_called_once()
 
 
 if __name__ == "__main__":

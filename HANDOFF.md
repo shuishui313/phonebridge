@@ -8,7 +8,7 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
-1. 按步骤 0a 核验目标属于 Apple Simulator，把交互限制在自有夹具内，并为驱动调用加上超时和当次结果校验。通过后按步骤 0b 在开发用 Codex 会话中试跑拟稿，保持提交路径禁用，按稳定 ID 核对收件人并回读完整草稿。既有 SwiftUI 启动、三项 XCUITest、simctl 诊断和 `XcodeMCPDriver` 实测均保留为基线。 [实现计划](docs/implementation-plan.md) · [测试报告](docs/test-report.md)
+1. 步骤 0a 驱动准入已完成并实测：Simulator 双重校验、前台夹具限制、桥接硬超时、断线释放会话和状态新鲜度，见 [测试报告](docs/test-report.md)。下一步按步骤 0b 在隔离 Codex 会话试跑拟稿，保持提交路径禁用，按稳定 ID 核对合成联系人并回读完整草稿，确认记录增量为零且两处负面用例生效后过 G1。既有 SwiftUI 启动、三项 XCUITest、simctl 诊断和 `XcodeMCPDriver` 实测均保留为基线。 [实现计划](docs/implementation-plan.md)
 2. 步骤 1 补任务时限、动作预算和有限重试。步骤 2 验证独立审批、持久化防重及断线恢复。提交结果不明确时先回读，仍无法判定就暂停。 [实现计划](docs/implementation-plan.md)
 3. Hark 经 SSH 的连通性可先用 Mock 验证，通道 A 可并行验证自有 App 的无副作用意图。步骤 2 通过后再执行步骤 3 的完整 Hark 联调，覆盖审批、回读和重连防重。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
 4. G3a 经用户另行授权后开始真机只读取证。G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入。目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付操作默认禁用。 [iOS 可行性](docs/ios-feasibility.md) · [实现计划](docs/implementation-plan.md)
