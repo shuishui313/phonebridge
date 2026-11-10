@@ -1,6 +1,6 @@
 # PhoneBridge 验证报告
 
-2026 年 11 月 10 日（香港时间）。本机为 macOS 27.0.1（26A434）、arm64、Python 3.10.10、Codex CLI 0.167.0-alpha.3.2，已安装 Xcode Command Line Tools。Python 套接字测试使用允许本机 Unix 域套接字的执行环境。
+2026 年 11 月 10 日（香港时间）。Python 与 Codex 测试在 macOS 27.0.1（26A434）、arm64、Python 3.10.10、Codex CLI 0.167.0-alpha.3.2 上执行。Python 套接字测试使用允许本机 Unix 域套接字的执行环境。
 
 | 验证范围 | 实际结果 |
 | --- | --- |
@@ -11,20 +11,22 @@
 | v0.2 FastMCP 进程 | MCP Python SDK 1.30.0 发现 8 个工具。完成导航、手势、草稿与确认，原型返回 `blocked`，重放被拒绝。 |
 | 打包和 CLI | `python3 -m pip install .` 构建并安装 0.4.0 wheel。在仓库外执行 `phonebridge --help` 成功。 |
 | 本机 Codex MCP | 用隔离的 `codex app-server` 会话直接调用。v0.3 发现 8 项、v0.4 发现 12 项。两版均经独立审批终端写入并回读一条模拟消息。这次验证覆盖客户端和工具调用，Hark 和自然语言模型回合另行验收。 |
-| 本机 Swift／脚本检查 | 两代 SwiftUI 与 v0.4 XCTest 的 3 份 Swift 文件通过解析，3 份 Shell 脚本通过 Bash 语法检查。 |
-| GitHub Actions | 配置 Linux Python 与 Xcode 27 Simulator 测试工作流。本地通过 YAML 解析，远端运行记录见仓库 Actions。 |
+| 本机 Swift／脚本检查 | 3 份 Swift 文件通过解析，3 份 Shell 脚本通过 Bash 语法检查。用 XcodeGen 2.46.0 生成含 XCUITest scheme 的工程，`plutil -lint` 通过。 |
+| GitHub Actions · Python | Ubuntu 的 Python 3.10 和 3.13 均成功安装 CLI，各通过 79 项整合测试和 10 项 v0.2 测试，0 失败，0 跳过。历史 FastMCP 冒烟按配置只在 3.10 作业运行且通过。[CI 运行记录](https://github.com/shuishui313/phonebridge/actions/runs/42773456200) |
+| GitHub Actions · Apple Simulator | Xcode 27.1（27A9275），iPhone 18 Pro Simulator，iOS 27.0。首轮首屏冒烟通过，两个 UI 测试中一个超时。修正 SwiftUI 无障碍标识后，首屏冒烟和两项 XCUITest 全通过。[首轮](https://github.com/shuishui313/phonebridge/actions/runs/42773418532) · [通过的重跑](https://github.com/shuishui313/phonebridge/actions/runs/42774343133) |
+| Apple Xcode MCP | 本机 Xcode 27.2 包含 `mcpbridge`，导出的 Claude 插件配置指向同一个命令。Xcode 工具会话尚未连通。独立的 XCUITest 和 PhoneBridge 的 MCP 运行证据分别见本表。 |
 | Hark、真机与真实微信 | 未运行。本次验证未连接实体 iPhone 或真实微信。 |
 
-## 2026-11-10 晚间补充：Apple Simulator 首次实测
+## 2026-11-10 晚间补充 · 本机 Apple Simulator 实测
 
-本机安装完整 Xcode 27.2（27B52）与 iOS 27.2 Simulator runtime（含 24B91016s 变体），`xcode-select` 指向完整 Xcode，许可已接受。测试设备为 iPhone 18 Pro Simulator（UDID `9117E5FD-038E-4A8D-B262-C427F6F5B489`），macOS 27.0.1、arm64。
+本机安装完整 Xcode 27.2（27B52）与 iOS 27.2 Simulator runtime（含 24B91016s 变体），`xcode-select` 指向完整 Xcode。测试设备为 iPhone 18 Pro Simulator，macOS 27.0.1、arm64。记录来自 [本机验证提交](https://github.com/shuishui313/phonebridge/commit/31c5b952dd549a869df8c445e1123116bb794f81)。
 
 | 验证项 | 实际结果 |
 | --- | --- |
 | `scripts/simctl-preflight.sh` | 通过。xcodebuild 27.2、simctl 可用、设备列表正常。 |
 | `scripts/apple-simulator-test.sh` | `APPLE SIMULATOR XCTEST PASS`。两项 XCUITest 通过（0 失败）：同名联系人标识区分、从"小明"聊天输入并发送并读回。结果包在 `build/ios-ui.*/PhoneBridgeUITests.xcresult`。 |
 | `scripts/simulator-smoke.sh` | 通过。夹具 App 在真实 Simulator 上启动并写出 `onAppear` 标记。 |
-| simctl MCP Driver 实测 | `AppleSimulatorDriver.status()` 正确返回 Booted 的 iPhone 18 Pro；`open_app("fixture")` 启动夹具成功；`observe()` 截图成功并返回本地路径与 SHA-256。 |
+| simctl Driver 直调 | `AppleSimulatorDriver.status()` 正确返回 Booted 的 iPhone 18 Pro。`open_app("fixture")` 启动夹具成功。`observe()` 截图成功并返回本地路径与 SHA-256。 |
 | 修复记录 | 首次运行因 XcodeGen 2.46.0 + Xcode 27 生成的工程缺少 `PRODUCT_NAME` 而构建失败（"Multiple commands produce '.app'"）。在 `simulator/project.yml` 的 `settings.base` 显式加 `PRODUCT_NAME: $(TARGET_NAME)` 后通过。 |
 
 Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 的结论已沉淀，后续 GitHub Actions 的 macOS runner 同样适用。Hark、真机与真实微信仍未验证，本节结论只覆盖 Simulator 与 simctl Driver 能力。

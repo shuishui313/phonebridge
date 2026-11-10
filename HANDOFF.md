@@ -8,7 +8,7 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
-1. 先从 [测试报告](docs/test-report.md) 核对 Apple Simulator 的最新证据。用自有测试 App 验证启动、选中测试联系人、输入和回读。若需 MCP 驱动界面交互，另建基于 XCUITest 的受控会话桥，沿用同一审批和验证条件。
+1. [测试报告](docs/test-report.md) 记录了 SwiftUI 启动、两项 XCUITest 和 simctl 诊断验证。用 [Apple Xcode MCP](docs/ios-feasibility.md#xcode-mcp-的开发用途) 在独立开发会话验证 Codex 是否能观察并操作自有测试 App，再决定复用该接口或实现专用 XCTest 桥。接入 PhoneBridge 时仍需验证独立审批和结果回读。
 2. 在受控主机上用 Hark 经 SSH 打开 Codex，按 [Hark 接入步骤](docs/hark-codex.md) 跑一次合成任务。分别验证连接中断、结果回读和重连后的防重。
 3. 上层 Agent 补齐任务时限、动作预算、有限重试和断线恢复。只重试已确认无副作用的动作。执行结果不明确时，先回读，再决定是否停止。实际设备接入前将审批移至 Agent 无法访问的独立通道。
 4. 真机、真实第三方 App 和本机运行仍是独立的可行性阶段。仅在用户另行决定后进入真机验证，保持金融与支付操作默认禁用。[iOS 可行性](docs/ios-feasibility.md)
