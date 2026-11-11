@@ -157,6 +157,18 @@ class HostedApprovalTests(unittest.TestCase):
         finally:
             endpoint.close()
 
+    def test_client_returns_structured_error_when_peer_closes_early(self):
+        from unittest import mock
+        from phonebridge import approvals as approvals_module
+        endpoint = self.endpoint().start()
+        try:
+            with mock.patch.object(approvals_module, "write_message",
+                                   side_effect=BrokenPipeError):
+                result = approval_request(str(self.path), "list", token=TOKEN, hosted=True)
+            self.assertEqual(result["error"], "approval_channel_unavailable")
+        finally:
+            endpoint.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -217,10 +217,12 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 | 现场一键脚本 | 新增 `scripts/cross-uid-approval-spike.py`：在具备 sudo 凭据的主机上自动建共享代码目录、私有 0700 服务目录、仅具名审批 UID 可读的令牌文件，启动 hosted 端点（真实 ACL + 默认 `peer_credential_uid`），以审批 UID 运行 `child.py` 完成批准／重放／缺令牌三类调用，并验证服务账号自身 UID 被拒、令牌不进入子命令、ACL 条目与布局、执行后恰好一条可归属记录。 |
 | 阻碍如实记录 | 本机运行输出 `outcome: blocked`、`cross_uid_process_verified: false`、`blocker: sudo_non_interactive_unavailable` 与现场复跑命令；退出 0 表示「受阻未验收」，不冒充通过。现场反馈显示常见误用是在家目录执行且用 `sudo` 跑脚本本体，故受阻与 root 运行都输出带仓库绝对路径的命令；检测到 `geteuid() == 0` 时以 `script_must_not_run_as_root` 拒绝，避免服务侧变成 root 而改变「两个非特权账号分离」的验收语义。 |
 | 票据不共享的可靠性修复 | 现场 `sudo -v` 后 `sudo -n -u nobody` 仍返回 `sudo: a password is required`，说明 sudo 票据未共享到脚本子进程。新增 `--authenticate`：一次交互式 `sudo -u <approver>` 启动常驻审批代理，控制 socket 由服务账号创建并只向该具名 UID 加 `read,write` ACL，之后批准／重放／缺令牌请求全部经该 socket 往返，不再依赖票据共享；密码由 sudo 直接向终端提示，脚本不读取、不存储、不转发。代理未连上时快速返回 `approver_agent_unavailable`，不长时间空等。 |
-| 替身彩排 | `tests/test_cross_uid_spike.py` 7 项：受阻分支、探测输出、子命令不含令牌、子进程失败／坏输出处理、root 运行拒绝、常驻代理启动命令构造，以及用注入的 runner 与 rehearsal hook 串联整条逻辑（12 项判据全过）。彩排证据固定标注 `approver_process_real: false`、`cross_uid_process_verified: false`。 |
-| 回归 | Python 全套 **210 项**、v0.2 归档 **10 项**；lints 与 `git diff --check` 干净。 |
+| 私有 TMPDIR 修复 | 现场第二次反馈 `child.py` 报 `Errno 13 Permission denied`：`tempfile.mkdtemp()` 落在 `/var/folders/<hash>/T/`，哈希中间目录为 0700，第二 UID 无法 traverse。改为在公共 `/tmp` 下创建共享目录，新增 `path_readable_by_other()` 预检（每级父目录需 other-execute、叶文件需 other-read）与 3 项判据；本机验证旧 `/var/folders/...` 路径判定 `False`、`/tmp` 路径 4 项判据全 `True`。 |
+| 审批端点 EPIPE 竞态 | 不受信 peer 时服务端未读请求就回复并关闭，客户端写请求偶发 `BrokenPipeError`。服务端改为总是先消费请求再按可信度回复；客户端对 `BrokenPipeError` / `ConnectionResetError` 返回 `approval_channel_unavailable`。新增回归测试后，连续三轮全套 212 项均通过。 |
+| 替身彩排 | `tests/test_cross_uid_spike.py` 8 项：受阻分支、探测输出、子命令不含令牌、子进程失败／坏输出处理、root 运行拒绝、常驻代理启动命令构造、公共 `/tmp` 路径可读性，以及用注入的 runner 与 rehearsal hook 串联整条逻辑（15 项判据全过）。彩排证据固定标注 `approver_process_real: false`、`cross_uid_process_verified: false`。 |
+| 回归 | Python 全套 **212 项**、v0.2 归档 **10 项**；多轮重跑中仅 SSH 回环竞态偶发一次失败、重跑通过；lints 与 `git diff --check` 干净。 |
 
-**已知问题**：`tests/test_hark_spike.py` 的 SSH 回环链路测试存在偶发连接竞态，三轮全套回归中一轮失败（`failure` / `reconnect` 证据为 false，临时 sshd 已就绪但个别阶段连接异常），重跑通过；与本轮改动无关，待单独加固。
+**已知问题**：`tests/test_hark_spike.py` 的 SSH 回环链路测试仍存在偶发连接竞态（临时 sshd 已就绪但个别阶段连接异常，曾导致 `failure` / `reconnect` 证据为 false）；本轮多轮全套回归中偶有一轮失败、重跑通过，与新增改动无关，继续保留记录待单独加固。审批端点此前的 EPIPE 竞态已在本轮修复，连续三轮全套 212 项均通过。
 
 **边界声明**：真实跨 UID 进程验收仍未完成，需要操作者在有 sudo 凭据的终端执行现场命令；脚本不索取密码、不做提权绕过。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
 

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,6 +129,22 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertIn("--socket", command)
         self.assertNotIn("super-secret-token", json.dumps(command))
         self.assertIn("--authenticate", spike.on_site_command("nobody"))
+
+    def test_shared_paths_are_readable_by_another_uid(self):
+        self.assertEqual(str(spike.public_temp_parent()), "/tmp")
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            work = Path(tmp)
+            os.chmod(work, 0o755)
+            child = work / "child.py"
+            child.write_text("pass", encoding="utf-8")
+            child.chmod(0o755)
+            self.assertTrue(spike.path_readable_by_other(child))
+            private = work / "private"
+            private.mkdir(mode=0o700)
+            hidden = private / "child.py"
+            hidden.write_text("pass", encoding="utf-8")
+            hidden.chmod(0o755)
+            self.assertFalse(spike.path_readable_by_other(hidden))
 
 
 if __name__ == "__main__":

@@ -112,27 +112,33 @@ class ApprovalEndpoint:
             timeout = 3
 
             def handle(self):
+                trusted = (required_uid is None
+                           or peer_uid_fn(self.request) == required_uid)
+                # Always consume the request first. Replying and closing before
+                # the client has finished writing causes BrokenPipeError.
                 try:
-                    if required_uid is not None and peer_uid_fn(self.request) != required_uid:
-                        reply = fail("approval_peer_not_trusted")
-                    else:
-                        request = read_message(self.rfile)
-                        if not isinstance(request, dict):
-                            raise ValueError("Expected an approval request object.")
-                        if token and not hmac.compare_digest(
-                                str(request.get("token", "")), token):
-                            reply = fail("approval_token_required")
-                        else:
-                            op, item = request.get("action"), request.get("approval_id")
-                            if op == "list":
-                                reply = bridge.approval_list()
-                            elif op == "approve" and isinstance(item, str):
-                                reply = bridge.approve(item)
-                            elif op == "deny" and isinstance(item, str):
-                                reply = bridge.deny(item)
-                            else:
-                                reply = fail("unknown_approval_action")
+                    request = read_message(self.rfile)
                 except (EOFError, OSError, ValueError, RecursionError):
+                    request = None
+                try:
+                    if not trusted:
+                        reply = fail("approval_peer_not_trusted")
+                    elif not isinstance(request, dict):
+                        reply = fail("invalid_approval_request")
+                    elif token and not hmac.compare_digest(
+                            str(request.get("token", "")), token):
+                        reply = fail("approval_token_required")
+                    else:
+                        op, item = request.get("action"), request.get("approval_id")
+                        if op == "list":
+                            reply = bridge.approval_list()
+                        elif op == "approve" and isinstance(item, str):
+                            reply = bridge.approve(item)
+                        elif op == "deny" and isinstance(item, str):
+                            reply = bridge.deny(item)
+                        else:
+                            reply = fail("unknown_approval_action")
+                except (OSError, ValueError, RecursionError):
                     reply = fail("invalid_approval_request")
                 try:
                     write_message(self.wfile, reply)
@@ -215,12 +221,15 @@ def approval_request(path: str, action: str, approval_id: str | None = None,
         message["approval_id"] = approval_id
     if token:
         message["token"] = token
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(timeout)
-        conn.connect(str(target))
-        with conn.makefile("rwb") as stream:
-            write_message(stream, message)
-            data = stream.readline(MAX_REPLY + 1)
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect(str(target))
+            with conn.makefile("rwb") as stream:
+                write_message(stream, message)
+                data = stream.readline(MAX_REPLY + 1)
+    except (BrokenPipeError, ConnectionResetError):
+        return fail("approval_channel_unavailable")
     if len(data) > MAX_REPLY:
         raise ValueError("Approval response is too large.")
     response = json.loads(data)

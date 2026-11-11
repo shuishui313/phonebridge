@@ -209,6 +209,32 @@ class ApproverSession:
             pass
 
 
+def public_temp_parent() -> Path:
+    """Use /tmp, not the per-user TMPDIR whose parents are 0700.
+
+    On macOS tempfile.gettempdir() points into /var/folders/<hash>/T/ and
+    the hash directory is private to the service account, so a second UID
+    cannot traverse the path even if the leaf directory is 0755.
+    """
+    return Path("/tmp")
+
+
+def path_readable_by_other(path: Path) -> bool:
+    """Every parent needs other-execute; the leaf needs other-read."""
+    parts = path.parts[1:]
+    current = Path("/")
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            mode = stat.S_IMODE(current.lstat().st_mode)
+        except OSError:
+            return False
+        needed = 0o004 if index == len(parts) - 1 else 0o001
+        if not (mode & needed):
+            return False
+    return True
+
+
 def on_site_command(approver: str) -> str:
     return (f"cd {ROOT} && python3 scripts/cross-uid-approval-spike.py "
             f"--approver {approver} --authenticate")
@@ -272,7 +298,8 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
     import pwd
     approver_uid = pwd.getpwnam(args.approver).pw_uid
     service_uid = os.getuid()
-    shared = Path(tempfile.mkdtemp(prefix="pb-crossuid-"))
+    temp_parent = public_temp_parent()
+    shared = Path(tempfile.mkdtemp(prefix="pb-crossuid-", dir=str(temp_parent)))
     endpoint = None
     session = None
     checks: dict[str, bool] = {}
@@ -305,6 +332,11 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         child = shared / "child.py"
         child.write_text(CHILD, encoding="utf-8")
         child.chmod(0o755)
+        checks["shared_parent_traversable_by_other"] = bool(
+            stat.S_IMODE(temp_parent.lstat().st_mode) & 0o001)
+        checks["shared_child_path_readable_by_other"] = path_readable_by_other(child)
+        checks["shared_package_path_readable_by_other"] = path_readable_by_other(
+            shared / "phonebridge" / "core.py")
 
         bridge = PhoneBridge()
         endpoint = ApprovalEndpoint(bridge, str(socket_path), token=token,
