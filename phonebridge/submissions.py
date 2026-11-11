@@ -272,7 +272,8 @@ class SubmissionGate:
                 return fail("submission_digest_mismatch")
             txn.append("dispatching", **fields)
         p.consumed = True  # approval consumed before the device call
-        if not getattr(bridge.driver, "simulated", False):
+        if (not getattr(bridge.driver, "simulated", False)
+                and not getattr(bridge.driver, "virtual_submit_enabled", False)):
             self.ledger.append("unresolved", **fields, detail="real_message_sending_disabled")
             return fail("real_message_sending_disabled")
         if hooks and callable(hooks.get("crash_before_send")):

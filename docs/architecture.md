@@ -28,7 +28,7 @@ flowchart TD
 | `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移与派发前记录基线（0700 目录 / 0600 文件、`flock`、`fsync`），是审批状态的**唯一事实来源**；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，派发前须确认台账中有 `approved` 事件，恢复只接受可归属到该收件人的新增记录，否则暂停且不自动重发。 |
 | `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离，`--approval-uid` 的对端凭据校验仅适用于外部托管端点，`isolation_mode` 如实披露当前模式。 |
 | `phonebridge/drivers.py` | `MockIPhone` 模拟合成私信场景、联系人、输入焦点与记录。`AppleSimulatorDriver` 调用 `xcrun simctl` 读取选定设备状态、启动自有夹具及保存截图。 |
-| `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前拒绝，无法定位即 fail closed；`record_count()` 从当次层级提供记录数。 |
+| `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前拒绝，无法定位即 fail closed；`record_count()` 从当次层级提供记录数。每次新鲜观察后从层级解析合成上下文（`app` / `screen` / `selected_id` / `input_text` / `contacts` / 仅当前联系人的 `messages`），使审批核心无需设备专用分支；`virtual_send` 只在操作者显式开启时由唯一提交门调用，绑定目标与正文并回读确认只新增一条合成记录，**不是真实发送**。 |
 | `simulator/`、`scripts/` | SwiftUI 测试 App（私信与信息流两个合成场景）、XCUITest、XcodeGen 工程描述与 Apple 测试脚本。 |
 
 ## 模拟发送顺序

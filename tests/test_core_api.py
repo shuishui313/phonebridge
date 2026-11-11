@@ -228,6 +228,32 @@ class PauseStateTests(unittest.TestCase):
         self.assertEqual(result["retry"],
                          {"allowed": False, "reason": "non_retryable_security_error"})
 
+    def test_lost_receipt_enters_persistent_pause(self):
+        class UnconfirmedBridge(PhoneBridge):
+            def execute(self, op_id):
+                return {"ok": False, "error": "submission_receipt_lost", "pause": True,
+                        "submission_state": "unresolved"}
+
+        api = CoreAPI(UnconfirmedBridge())
+        result = api.dispatch("phone_execute_operation", {"approval_id": "op-1"})
+        self.assertTrue(result["pause"])
+        self.assertEqual(result["retry"]["allowed"], False)
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+        self.assertTrue(api.dispatch("phone_status")["task"]["paused"])
+        self.assertEqual(api.dispatch("phone_inspect")["ok"], True)
+
+    def test_unclear_submission_evidence_overrides_clear_task_readback(self):
+        class UnclearEvidenceBridge(PhoneBridge):
+            def execute(self, op_id):
+                return {"ok": True, "verification": {"matched": False, "unclear": True,
+                                                     "source": "record_not_attributable"}}
+
+        api = CoreAPI(UnclearEvidenceBridge())
+        result = api.dispatch("phone_execute_operation", {"approval_id": "op-2"})
+        self.assertEqual(result["verification"]["outcome"], "unclear")
+        self.assertTrue(result["verification"]["pause"])
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,9 @@ python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serv
 
 `--submission-state` 指定 0700 目录内的 0600 JSONL 台账，持久化操作 ID、收件人 ID、正文 SHA-256、派发前记录基线与状态迁移，**不存明文正文**；台账是审批状态的唯一事实来源，派发状态在设备调用前落盘，重启后只接受可归属到该收件人的新增记录为完成证据，无法确认即暂停且不自动重发。`--approval-token-env` 从操作者终端环境读取审批令牌，是本地可用的隔离手段；`--approval-uid` 的对端凭据校验仅适用于外部托管端点加 OS ACL，不单独构成隔离；`--require-approval-isolation` 只认实际存在的令牌并同时要求持久化台账。`phone_status` 的 `submissions.approval_isolated` 与 `approval_isolation_mode` 披露当前状态。未配置令牌时仅用于 Mock 演示，详见 [安全边界](docs/security.md)。
 
-真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截，运行后会把夹具恢复为禁用提交。真实驱动的完整可写验收仍是 G2 阻塞项，见 [实现计划](docs/implementation-plan.md)。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝，发送消息始终禁用。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
+真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截。`scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>` 则跑 G2 完整可写验收（36 项判据：未审批拒绝、目标／正文／上下文变更、批准后恰好一条可归属记录、重放、重启不重发），运行后把夹具恢复为 `pb-disable-submit` 基线。两个脚本都只作用于自有合成夹具，**真实消息发送始终禁用**。 [测试报告](docs/test-report.md) · [实现计划](docs/implementation-plan.md)
+
+`--allow-fixture-virtual-submit` 是操作者启动服务时显式给出的第二个开关，只允许唯一提交门在自有合成夹具内生成一条合成记录；CLI 强制它同时具备 `--driver xcode-mcp`、`--allow-xcode-interactions` 与 `--require-approval-isolation`（实际令牌 + 持久化台账）。默认关闭，Agent 无法自行开启，夹具以 `pb-disable-submit` 启动时也不生效。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 ## 历史版本与开发
 

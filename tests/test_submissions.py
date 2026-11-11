@@ -342,6 +342,16 @@ class ApprovalIsolationTests(unittest.TestCase):
                       "--approval-uid", str(os.getuid() + 1),
                       "--submission-state", str(Path(self.t.name) / "s.jsonl"), "serve"])
 
+    def test_cli_virtual_submit_requires_real_driver(self):
+        with self.assertRaises(SystemExit):
+            cli_main(["--allow-fixture-virtual-submit", "serve"])
+
+    def test_cli_virtual_submit_requires_full_isolation(self):
+        udid = "9117E5FD-038E-4A8D-B262-C427F6F5B489"
+        with self.assertRaises(SystemExit):
+            cli_main(["--allow-fixture-virtual-submit", "--driver", "xcode-mcp",
+                      "--sim-udid", udid, "--allow-xcode-interactions", "serve"])
+
 
 class FailingLedger:
     def __init__(self, inner):

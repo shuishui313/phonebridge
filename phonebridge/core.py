@@ -135,7 +135,10 @@ class PhoneBridge:
         ):
             return fail("invalid_message")
         with self._lock:
-            if not getattr(self.driver, "simulated", False) or not getattr(self.driver, "send_enabled", False):
+            simulated = (getattr(self.driver, "simulated", False)
+                         and getattr(self.driver, "send_enabled", False))
+            virtual = getattr(self.driver, "virtual_submit_enabled", False)
+            if not simulated and not virtual:
                 return fail("real_message_sending_disabled")
             resolver = getattr(self.driver, "resolve_contact_id", None)
             canonical_id = resolver(recipient_id) if callable(resolver) else recipient_id

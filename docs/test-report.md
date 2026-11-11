@@ -137,6 +137,26 @@ MCP 工具契约未变：仍 12 个工具、参数与别名行为一致。真机
 
 **剩余边界**：真实跨账号审批验收、真机、真实第三方 App、Hark 完整联调、隔离 Codex 会话的自然语言拟稿复核均未完成；同账号下令牌也不是强隔离。评审反例使用本地合成数据与替身。
 
+## 2026-11-11 追加 · G2 真实驱动完整可写验收
+
+G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一直没过，根因是 `XcodeMCPDriver.virtual_send` 硬编码 `real_message_sending_disabled`，「批准后只新增一条匹配记录」这条判据从未在真实驱动上被验证。本轮补全驱动能力并用 `scripts/xcode-mcp-g2-writable-spike.py` 在 Apple Simulator 上跑完整序列，**36 项布尔判据全部通过，`g2_passed: true`**。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 运行范围 | 自有合成夹具（bundle `org.example.phonebridge.fixture`）、iOS 27.2 Simulator、iPhone 18 Pro。夹具以**提交按钮启用**的常规方式启动，脚本结束前重新以 `pb-disable-submit` 启动恢复 G1 基线。服务必须同时带 `--driver xcode-mcp`、`--allow-xcode-interactions`、`--allow-fixture-virtual-submit`、`--require-approval-isolation`、实际令牌与持久化台账，缺一项 CLI 拒绝启动。 |
+| 隔离与开关披露 | `phone_status` 返回 `submissions.approval_isolated: true`、`approval_isolation_mode: token`、`virtual_submit_enabled: true`。 |
+| 未审批通用点击 | 常规启动下点启用的 `chat.send`，在**派发交互命令之前**返回 `submission_requires_approval`、`retry.allowed: false`，回读层级无 `chat.message.0`。 |
+| 未审批执行 / 无令牌自批 | 未批准就 `phone_execute_operation` 返回 `independent_approval_required`；审批 CLI 不带令牌返回 `approval_token_required`，随后执行仍被拒；记录数保持零。 |
+| 目标／正文／上下文变更 | 换收件人返回 `recipient_not_verified_in_current_chat`，改正文返回 `draft_mismatch`；拟稿后再次点击输入框使 revision 变化，审批返回 `stale_or_expired_proposal`，执行被拒，记录数保持零。 |
+| 批准后单次提交 | 操作者带令牌批准后 `phone_execute_operation` 返回 `ok: true`、`submission_state: completed`、`verification.source: attributed_new_record`、`real_message_sent: false`、`virtual_fixture_send: true`；回读层级**恰好一条** `chat.message.0` 且 `label` 与草稿完全一致。 |
+| 重放 | 同一操作 ID 再次执行返回 `unknown_or_processed_operation`，记录数仍为 1。 |
+| 重连／重启不重发 | 停掉 MCP 服务后向台账注入一条 `dispatching`，用同一台账重启服务。启动恢复报告 `pending_pause: 1`、`confirmed: false`、`resent: false`、`evidence: record_not_attributable`；重启后回读仍只有 1 条记录，不重复提交。 |
+| 台账脱敏 | 原始 JSONL 中不存在草稿明文；事件序列含 `prepared / approved / dispatching / completed`。 |
+| 单元测试 | `tests/test_xcode_mcp.py` 新增 9 项（开关关闭、上下文解析、通用点击仍被拦、批准单次提交、目标／正文不匹配、禁用控件、记录未确认暂停、歧义联系人、重启无新鲜观察暂停）；`tests/test_submissions.py` 新增 2 项 CLI 门禁；`tests/test_core_api.py` 新增 2 项失败路径暂停。Python 全套 **173 项**、v0.2 归档 10 项通过。 |
+| 回归 | `scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`、`record_increment: false`；`scripts/xcode-mcp-submit-guard-spike.py` 仍 `guard_passed: true`；XCUITest 4 项 `TEST SUCCEEDED`；lints 与 `git diff --check` 干净。 |
+
+**边界声明**：这里产生的只是合成夹具内的一条合成记录，不是真实消息发送；没有打开真实第三方 App、没有连接真实设备、没有接外部审批设备。TTL 超时由单元测试用替身时钟验证，真机脚本用「屏幕变化导致 revision 失效」这一等价路径覆盖；Hark 经 SSH 的链路断线重连属于步骤 3，本轮的「重连」仅指 MCP 服务进程重启与台账恢复。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、真机与真实第三方 App 仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

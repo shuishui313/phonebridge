@@ -42,6 +42,9 @@ def main(argv=None):
                    help="Peer UID check; requires an externally hosted endpoint with OS ACLs")
     p.add_argument("--require-approval-isolation", action="store_true",
                    help="Refuse to start unless an approval token and durable state are configured")
+    p.add_argument("--allow-fixture-virtual-submit", action="store_true",
+                   help="Human opt-in: let the approved submission gate create one synthetic "
+                        "record inside the owned Simulator fixture. Never a real message send.")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
     ap = sub.add_parser("approvals")
@@ -77,6 +80,13 @@ def main(argv=None):
                     "--approval-uid alone requires an externally hosted approval endpoint")
         if not args.submission_state:
             p.error("--require-approval-isolation needs durable --submission-state")
+    if args.allow_fixture_virtual_submit:
+        if args.driver != "xcode-mcp" or not args.allow_xcode_interactions:
+            p.error("--allow-fixture-virtual-submit requires --driver xcode-mcp "
+                    "and --allow-xcode-interactions")
+        if not args.require_approval_isolation:
+            p.error("--allow-fixture-virtual-submit requires --require-approval-isolation "
+                    "(an approval token and a durable submission ledger)")
     driver = None
     try:
         ledger = SubmissionLedger(args.submission_state) if args.submission_state else None
@@ -89,7 +99,8 @@ def main(argv=None):
                                     interaction_approved=args.allow_xcode_interactions,
                                     fixture_bundle=args.fixture_bundle,
                                     timeout=args.bridge_timeout,
-                                    session_identifier=args.session_id)
+                                    session_identifier=args.session_id,
+                                    virtual_submit_enabled=args.allow_fixture_virtual_submit)
         bridge = PhoneBridge(driver, audit_path=args.audit_path, ledger=ledger)
         recovery = bridge.recover_submissions()
         if recovery["recovered"]:

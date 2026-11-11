@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .drivers import fail
+from .drivers import MESSAGING_APP, fail
 
 UDID_PATTERN = r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"
 BUNDLE_PATTERN = r"[A-Za-z0-9.-]{6,120}"
@@ -50,6 +50,21 @@ ELEMENT_IDENTIFIER = re.compile(r"identifier:\s*'([^']*)'")
 ELEMENT_HITPOINT = re.compile(r"hitPoint:\s*\{([\d.]+),\s*([\d.]+)\}")
 SUBMIT_IDENTIFIERS = frozenset({"chat.send", "compose.post"})
 SUBMIT_TOLERANCE = 30.0
+
+# Fixed synthetic contacts in the owned fixture. "Alex" appears twice, so it
+# is deliberately not resolvable by display name and can never be bound to an
+# operation. No real contacts or messages are ever read here.
+FIXTURE_CONTACTS = (
+    {"id": "contact-01", "name": "Test Contact"},
+    {"id": "contact-02", "name": "Casey"},
+    {"id": "alex-01", "name": "Alex"},
+    {"id": "alex-02", "name": "Alex"},
+)
+CHAT_RECORD_IDENTIFIER = re.compile(r"identifier:\s*'chat\.message\.(\d+)'")
+CHAT_INPUT_IDENTIFIER = re.compile(r"identifier:\s*'chat\.input'")
+CONTACT_ROW_IDENTIFIER = re.compile(r"identifier:\s*'contact\.[A-Za-z0-9_-]+'")
+NAVIGATION_IDENTIFIER = re.compile(r"NavigationBar,.*?identifier:\s*'([^']*)'")
+ELEMENT_VALUE = re.compile(r"(?:value|label):\s*(?:'([^']*)'|([^,]+))")
 
 
 class BridgeUnavailable(Exception):
@@ -230,7 +245,8 @@ class XcodeMCPDriver:
 
     def __init__(self, udid: str, *, client=None, session_identifier: str | None = None,
                  interaction_approved: bool = False, fixture_bundle: str = FIXTURE_BUNDLE,
-                 simulator_checker=None, timeout: float = DEFAULT_TIMEOUT):
+                 simulator_checker=None, timeout: float = DEFAULT_TIMEOUT,
+                 virtual_submit_enabled: bool = False):
         if not isinstance(udid, str) or not re.fullmatch(UDID_PATTERN, udid):
             raise ValueError("invalid simulator UDID")
         if not isinstance(fixture_bundle, str) or not re.fullmatch(BUNDLE_PATTERN, fixture_bundle):
@@ -256,6 +272,20 @@ class XcodeMCPDriver:
         self._preflight_ok = False
         self._simulator_runtime: str | None = None
         self._closed = False
+        # A human opt-in is required before the approved submission gate may
+        # produce a synthetic record inside the owned fixture. This is never a
+        # real message send and never reachable through generic taps.
+        self.virtual_submit_enabled = bool(virtual_submit_enabled)
+        # Synthetic context derived ONLY from the most recent fresh hierarchy.
+        # It implements the same contract as MockIPhone so the approval core
+        # needs no device-specific branches.
+        self.app = "home"
+        self.screen = "home"
+        self.selected_id: str | None = None
+        self.input_text = ""
+        self.contacts = tuple(dict(c) for c in FIXTURE_CONTACTS)
+        self.messages: dict[str, list[dict]] = {}
+        self._fixture_records: list[str] = []
 
     def _invoke(self, name: str, arguments: dict) -> dict:
         if name not in ALLOWED_TOOLS:
@@ -310,7 +340,69 @@ class XcodeMCPDriver:
         # Never fall back to a cached observation for a current decision.
         self._last_hierarchy = hierarchy
         self._last_screenshot = screenshot
+        self._refresh_fixture_state()
         return result
+
+    def _refresh_fixture_state(self) -> None:
+        """Derive synthetic approval context from the latest fresh hierarchy.
+
+        Only the currently visible chat is exposed in ``messages``, so a record
+        from another contact can never be attributed to an operation.
+        """
+        text = ""
+        if self._last_hierarchy:
+            try:
+                text = Path(self._last_hierarchy).read_text(encoding="utf-8")
+            except (OSError, TypeError, ValueError):
+                text = ""
+        if CHAT_INPUT_IDENTIFIER.search(text):
+            screen = "chat"
+        elif CONTACT_ROW_IDENTIFIER.search(text):
+            screen = "contacts"
+        elif re.search(r"identifier:\s*'app\.(?:whatsapp|x)'", text):
+            screen = "home"
+        else:
+            screen = "other"
+        self.screen = screen
+        self.app = MESSAGING_APP if screen in ("chat", "contacts") else screen
+
+        self.input_text = ""
+        for line in text.splitlines():
+            if CHAT_INPUT_IDENTIFIER.search(line):
+                value = ELEMENT_VALUE.search(line)
+                self.input_text = ((value.group(1) or value.group(2) or "").strip()
+                                   if value else "")
+                break
+
+        self.selected_id = None
+        nav = NAVIGATION_IDENTIFIER.search(text)
+        if screen == "chat" and nav:
+            matches = [c["id"] for c in FIXTURE_CONTACTS if c["name"] == nav.group(1)]
+            if len(matches) == 1:  # ambiguous display names cannot be bound
+                self.selected_id = matches[0]
+
+        found = []
+        for line in text.splitlines():
+            identifier = CHAT_RECORD_IDENTIFIER.search(line)
+            if not identifier:
+                continue
+            value = ELEMENT_VALUE.search(line)
+            found.append((int(identifier.group(1)),
+                          (value.group(1) or value.group(2) or "").strip() if value else ""))
+        found.sort(key=lambda item: item[0])
+        self._fixture_records = [body for _, body in found]
+        self.messages = ({self.selected_id: [{"direction": "outbound", "text": body}
+                                             for body in self._fixture_records]}
+                         if screen == "chat" and self.selected_id else {})
+
+    def resolve_contact_id(self, identity: str) -> str | None:
+        if not isinstance(identity, str):
+            return None
+        for contact in self.contacts:
+            if contact["id"] == identity:
+                return contact["id"]
+        matches = [c["id"] for c in self.contacts if c["name"] == identity]
+        return matches[0] if len(matches) == 1 else None
 
     def _observation(self, hierarchy_path: str) -> dict:
         try:
@@ -389,9 +481,16 @@ class XcodeMCPDriver:
                 "simulator_runtime": self._simulator_runtime,
                 "fixture_bundle": self.fixture_bundle,
                 "bridge_timeout": getattr(self.client, "timeout", None),
+                "virtual_submit_enabled": self.virtual_submit_enabled,
                 "capabilities": ["status", "observe", "open_app"],
                 "limited_capabilities": ["tap", "swipe", "type_text", "home"],
-                "limitations": "Only allowlisted Xcode MCP tools. Interactions require a verified Simulator, the fixture in foreground, a fresh observation and out-of-band enablement. No message sending."}
+                "limitations": (
+                    "Only allowlisted Xcode MCP tools. Interactions require a verified "
+                    "Simulator, the fixture in foreground, a fresh observation and "
+                    "out-of-band enablement. Generic taps never reach enabled submit "
+                    "controls. With an explicit human opt-in the trusted-side approval "
+                    "gate may create one synthetic record inside the owned fixture; "
+                    "no real message is sent and no third-party app is touched.")}
 
     def observe(self):
         with self._lock:
@@ -401,8 +500,13 @@ class XcodeMCPDriver:
             info = self._observation(result["hierarchyPath"])
             if not info.get("ok"):
                 return info
-            return self._state(result, foreground_bundle=info["foreground_bundle"],
-                              fixture_in_foreground=info["foreground_bundle"] == self.fixture_bundle)
+            return self._state(
+                result, foreground_bundle=info["foreground_bundle"],
+                fixture_in_foreground=info["foreground_bundle"] == self.fixture_bundle,
+                app=self.app, screen=self.screen, selected_id=self.selected_id,
+                draft_length=len(self.input_text),
+                record_count=len(self._fixture_records),
+                virtual_submit_enabled=self.virtual_submit_enabled)
 
     def open_app(self, app: str):
         bundle = APP_BUNDLES.get(app)
@@ -495,7 +599,42 @@ class XcodeMCPDriver:
         return fail("unsupported_by_xcode_mcp", action="open_chat")
 
     def virtual_send(self, contact_id: str, text: str):
-        return fail("real_message_sending_disabled")
+        """Approved submission gate ONLY: create one synthetic fixture record.
+
+        Generic taps and swipes cannot reach this path (``tap`` refuses to hit
+        an enabled submit control). Requires a human opt-in, a verified
+        Simulator, the fixture in foreground, and a fresh observation binding
+        the exact recipient and draft. Nothing leaves the synthetic fixture.
+        """
+        if not self.virtual_submit_enabled or not self.interaction_approved:
+            return fail("real_message_sending_disabled")
+        if not isinstance(text, str) or not text.strip() or not contact_id:
+            return fail("submission_context_mismatch")
+        with self._lock:
+            guard = self._pre_interaction()
+            if not guard.get("ok"):
+                return guard
+            if (self.app != MESSAGING_APP or self.screen != "chat"
+                    or self.selected_id != contact_id or self.input_text != text):
+                return fail("submission_context_mismatch")
+            points = guard.get("submit_points") or []
+            if len(points) != 1:
+                # Includes the G1 baseline where Send/Post are disabled.
+                return fail("submit_control_unavailable")
+            before = len(self._fixture_records)
+            px, py = points[0]
+            result = self._interaction(f"t {round(px)} {round(py)}", guard=guard)
+            if not result.get("ok"):
+                return result
+            if (len(self._fixture_records) != before + 1
+                    or self._fixture_records[-1] != text):
+                return fail("virtual_submission_not_confirmed",
+                            note="Do not resend; read the device back and pause.")
+            return {"ok": True, "simulated": True, "virtual_fixture_send": True,
+                    "real_message_sent": False, "recipient_id": contact_id,
+                    "message_length": len(text), "record_count": len(self._fixture_records),
+                    "foreground_bundle": guard.get("foreground_bundle"),
+                    "hierarchy_path": self._last_hierarchy}
 
     def close(self):
         with self._lock:

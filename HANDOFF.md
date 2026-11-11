@@ -9,18 +9,19 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 ### 本日进展
 
 - 昨日收工交接为 `4add3cd`，同事 review 记录为 `fd65db6`（`docs/reviews/711ab2a.md`）。今日远端无新提交、评审方未对 4 个决策点回复；按「减少过程性提问」的既有偏好，**按保守方向自主决断**并写入实现，评审方可复核或推翻。逐条映射见 [评审回复](docs/reviews/711ab2a-response.md)。
-- **4 个自主决断**：撤回步骤 2「已完成」改为「Mock 与台账层完成，完整可写验收未过」并列为 G2 阻塞项；真实驱动恢复证据无法归属到操作即一律暂停人工核验；暂停全局写动作、只读放行、可信侧 `resume_after_readback()` 绑定成功回读；`--approval-uid` 降级为外部托管模式、令牌为默认隔离。
+- **4 个自主决断（上午，当时状态）**：撤回步骤 2「已完成」改为「Mock 与台账层完成，完整可写验收未过」并列为 G2 阻塞项（该阻塞项已在同日下午解除，见下方 G2 条目）；真实驱动恢复证据无法归属到操作即一律暂停人工核验；暂停全局写动作、只读放行、可信侧 `resume_after_readback()` 绑定成功回读；`--approval-uid` 降级为外部托管模式、令牌为默认隔离。
 - **5 条发现全部修复**：台账改为唯一事实来源（审批先落盘、派发前验 `approved` 事件、恢复按收件人与记录基线增量归属）；真实驱动在派发交互命令前拦截启用的提交控件、无法定位即 fail closed；`CoreAPI` 增加持久暂停、收紧回读 `clear` 判据、安全类拒绝不返回重试建议；隔离状态新增 `isolation_mode` 披露、门禁只认实际令牌。P2-5 按 P1 处理，与 P1-2 合并为同一根因修复。
 - **验证**：Python 160 项、v0.2 归档 10 项、XCUITest 4 项通过；`scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`；新增 `scripts/xcode-mcp-submit-guard-spike.py` 在常规启动（提交按钮启用）下实测 `guard_passed: true`（事前拒绝、无重试建议、记录增量为零，运行后恢复禁用夹具）；lints 与 `git diff --check` 干净。
 - **文档**：新增评审回复记录；实现计划撤回步骤 2 完成标注、写明 G2 阻塞项并更新现状表，G1 拆为「脚本通过 / 隔离会话复核待办」两项；测试报告补修复证据；安全边界、架构、README 与 Simulator 指南同步。所有改动已推送 `main`。
+- **G2 完整可写验收（同日继续完成）**：此前真实驱动 `virtual_send` 硬编码禁用，「批准后只新增一条匹配记录」从未在真实驱动上验证过。本轮给 `XcodeMCPDriver` 补齐从新鲜层级解析的合成上下文（app / screen / selected_id / input_text / contacts / messages，只暴露当前联系人）与受控虚拟提交；新增操作者显式开关 `--allow-fixture-virtual-submit`，CLI 强制它必须同时具备真实驱动、交互授权、实际令牌与持久化台账；通用点击仍被事前拦截，只有唯一提交门能触发。`scripts/xcode-mcp-g2-writable-spike.py` 在 Apple Simulator 上实测 **36 项判据全过、`g2_passed: true`**，覆盖未审批拒绝、无令牌自批、目标／正文／上下文变更、批准后恰好一条可归属记录、重放拒绝、MCP 服务重启不重发、台账脱敏；运行后恢复 `pb-disable-submit` 基线。顺带修掉一个真实缺口：提交门返回 `pause: true` 的失败路径此前不进入持久暂停，证据 `unclear` 也会被任务级 `clear` 覆盖。详见 [测试报告](docs/test-report.md) 与 [安全边界](docs/security.md)。
+- **验证更新**：Python 173 项、v0.2 归档 10 项、XCUITest 4 项通过；0b 拟稿试跑仍 `g1_passed: true`、常规启动拦截脚本仍 `guard_passed: true`；lints 与 `git diff --check` 干净。
 
 ### 下一阶段
 
-1. **G2 完整可写验收（阻塞项）**：在真实驱动与自有夹具上证明未审批操作在提交前被拒绝、目标或正文变更后不产生提交、批准后只新增一条可归属的匹配记录，并覆盖重放、过期、断线与重连。当前只有常规启动下的「通用点击被拒」单项实测和 Mock/替身回归，还不能算完整可写验收。 [实现计划](docs/implementation-plan.md) · [评审记录](docs/reviews/711ab2a.md)
+1. **步骤 3 · Hark 联调（G2 剩余阻塞项）**：真实驱动的完整可写验收已通过，Hark 经 SSH 的连通、成功、失败、中断记录与重连防重现在是 G2 最后的阻塞项；通道 A 可并行验证自有 App 的无副作用意图。步骤 3 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
 2. **真实跨账号审批验收**：`--approval-uid` 在当前 0700 目录 / 0600 套接字模型下默认不可连接，需先决定并实现外部托管端点加 OS ACL 或外部可信审批设备，再用真实不同 UID 进程验收；现有测试只校验了凭据判定逻辑。 [评审回复](docs/reviews/711ab2a-response.md)
 3. **G1 剩余项**：在隔离 Codex 会话中按 `scripts/xcode-mcp-draft-spike.py` 的等价工具序列复核自然语言拟稿，单独记录结果；该项仍为待办，不与自动化脚本结果合并。 [测试报告](docs/test-report.md)
-4. **之后才进入步骤 3**：Hark 经 SSH 的连通、成功、失败、中断记录与重连防重；通道 A 可并行验证自有 App 的无副作用意图。G2 通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
-5. **边界不变**：可写联调与真机阶段必须用 `--require-approval-isolation` 启动并配置实际令牌、指定 `--submission-state`；同账号下令牌也不是强隔离。提交结果不明确时先回读，仍无法判定就持久暂停写动作、只读放行，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App 与 Hark 完整联调均未验证。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md)
+4. **边界不变**：真实消息发送始终禁用；`--allow-fixture-virtual-submit` 只是自有合成夹具内的验收开关，默认关闭，必须与实际令牌和持久化台账同时启用，不打开真实第三方 App、不接真机。可写联调与真机阶段必须用 `--require-approval-isolation` 启动并配置实际令牌、指定 `--submission-state`；同账号下令牌也不是强隔离。提交结果不明确时先回读，仍无法判定就持久暂停写动作、只读放行，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App、跨账号审批与 Hark 完整联调均未验证。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 
 **项目名称：** PhoneBridge  

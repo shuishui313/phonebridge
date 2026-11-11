@@ -1,10 +1,13 @@
 import io
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from phonebridge.core import PhoneBridge
+from phonebridge.submissions import SubmissionLedger, digest_of
 from phonebridge.xcode_mcp import (
     ALLOWED_TOOLS, FIXTURE_BUNDLE, MCPBridgeClient, XcodeMCPDriver,
 )
@@ -332,6 +335,177 @@ class SubmitGuardTests(unittest.TestCase):
         instance, _ = self.driver(line)
         self.assertTrue(instance.observe()["ok"])
         self.assertEqual(instance.record_count(), 1)
+
+
+class FakeChatClient(FakeClient):
+    """Synthetic chat hierarchy mirroring the owned fixture's real layout."""
+
+    SEND_POINT = (370.3, 811.2)
+
+    def __init__(self, root: Path, *, draft="G2 synthetic record", contact="Casey",
+                 existing=(), submit_enabled=True, wrong_record=False):
+        super().__init__(root)
+        self.draft = draft
+        self.contact = contact
+        self.records = list(existing)
+        self.submit_enabled = submit_enabled
+        self.wrong_record = wrong_record
+        self.submits = 0
+
+    def _observation(self):
+        self.capture_index += 1
+        hierarchy = self.root / f"hierarchy-{self.capture_index}.txt"
+        screenshot = self.root / f"screen-{self.capture_index}.png"
+        value = f", value: {self.draft}" if self.draft else ""
+        identifier = "chat.send" if self.submit_enabled else "chat.send.disabled"
+        lines = [
+            f"Application bundle identifier: {FIXTURE_BUNDLE}\n",
+            " Window, {{0.0, 0.0}, {402.0, 874.0}}, hitPoint: {201.0, 437.0}\n",
+            f" NavigationBar, {{{{0.0, 62.0}}, {{402.0, 106.0}}}}, "
+            f"identifier: '{self.contact}', hitPoint: {{201.0, 115.0}}\n",
+            "  TextField, {{12.0, 794.0}, {330.7, 34.0}}, identifier: 'chat.input', "
+            f"placeholderValue: 'Message'{value}, Keyboard Focused, hitPoint: {{177.3, 811.0}}\n",
+        ]
+        for index, body in enumerate(self.records):
+            lines.append("  StaticText, {{16.0, 168.0}, {370.0, 52.3}}, "
+                         f"identifier: 'chat.message.{index}', label: '{body}', "
+                         "hitPoint: {201.0, 194.2}\n")
+        lines.append("  Button, {{350.7, 801.0}, {39.3, 20.3}}, "
+                     f"identifier: '{identifier}', label: 'Send', hitPoint: {{370.3, 811.2}}\n")
+        hierarchy.write_text("".join(lines), encoding="utf-8")
+        screenshot.write_bytes(f"synthetic {self.capture_index}".encode())
+        return str(hierarchy), str(screenshot)
+
+    def call(self, name, arguments):
+        if name == "DeviceInteractionSynthesize":
+            command = arguments.get("interactionCommand", "")
+            if self.submit_enabled and command == (
+                    f"t {round(self.SEND_POINT[0])} {round(self.SEND_POINT[1])}"):
+                self.records.append("OTHER TEXT" if self.wrong_record else self.draft)
+                self.draft = ""
+                self.submits += 1
+        return super().call(name, arguments)
+
+
+class VirtualSubmitTests(unittest.TestCase):
+    """The approved gate may create one synthetic record; nothing else may."""
+
+    DRAFT = "G2 synthetic record"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="pb-virtual-submit-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        os.chmod(self.root, 0o700)
+
+    def checker(self, udid):
+        return {"ok": True, "runtime": RUNTIME, "device_name": "iPhone 18 Pro"}
+
+    def build(self, *, client=None, virtual_submit_enabled=True):
+        client = client or FakeChatClient(self.root)
+        driver = XcodeMCPDriver(
+            UDID, client=client, simulator_checker=self.checker,
+            interaction_approved=True,
+            virtual_submit_enabled=virtual_submit_enabled)
+        self.addCleanup(driver.close)
+        ledger = SubmissionLedger(str(self.root / "submissions.jsonl"))
+        return client, driver, PhoneBridge(driver, ledger=ledger), ledger
+
+    def test_switch_is_off_by_default(self):
+        client, driver, bridge, _ = self.build(virtual_submit_enabled=False)
+        self.assertFalse(driver.status()["virtual_submit_enabled"])
+        self.assertTrue(bridge.inspect()["ok"])
+        self.assertEqual(bridge.prepare_message("contact-02", self.DRAFT)["error"],
+                         "real_message_sending_disabled")
+        self.assertEqual(driver.virtual_send("contact-02", self.DRAFT)["error"],
+                         "real_message_sending_disabled")
+        self.assertEqual(client.submits, 0)
+
+    def test_context_is_parsed_from_fresh_hierarchy(self):
+        client, driver, bridge, _ = self.build()
+        observed = bridge.inspect()
+        self.assertEqual(observed["screen"], "chat")
+        self.assertEqual(observed["selected_id"], "contact-02")
+        self.assertEqual(observed["draft_length"], len(self.DRAFT))
+        self.assertTrue(observed["virtual_submit_enabled"])
+        self.assertEqual(driver.contacts[1]["id"], "contact-02")
+        self.assertEqual(driver.resolve_contact_id("Casey"), "contact-02")
+        self.assertIsNone(driver.resolve_contact_id("Alex"))  # two matching contacts
+
+    def test_generic_tap_still_cannot_submit(self):
+        client, driver, bridge, _ = self.build()
+        result = bridge.tap(370.3 / 402, 811.2 / 874)
+        self.assertEqual(result["error"], "submission_requires_approval")
+        self.assertEqual(client.submits, 0)
+        self.assertEqual(driver.record_count(), 0)
+
+    def test_approved_submission_creates_one_attributed_record(self):
+        client, driver, bridge, ledger = self.build()
+        self.assertTrue(bridge.inspect()["ok"])
+        op = bridge.prepare_message("contact-02", self.DRAFT)["approval_id"]
+        self.assertTrue(bridge.approve(op)["ok"])
+        result = bridge.execute(op)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["submission_state"], "completed")
+        self.assertEqual(result["verification"]["source"], "attributed_new_record")
+        self.assertFalse(result["real_message_sent"])
+        self.assertTrue(result["virtual_fixture_send"])
+        self.assertEqual(client.submits, 1)
+        self.assertEqual(driver.record_count(), 1)
+        events = [json.loads(line)["event"] for line in
+                  (self.root / "submissions.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(events, ["prepared", "approved", "dispatching", "completed"])
+        self.assertEqual(bridge.execute(op)["error"], "unknown_or_processed_operation")
+        self.assertEqual(client.submits, 1)
+
+    def test_target_and_body_mismatch_are_rejected(self):
+        client, driver, bridge, _ = self.build()
+        self.assertTrue(bridge.inspect()["ok"])
+        self.assertEqual(driver.virtual_send("contact-01", self.DRAFT)["error"],
+                         "submission_context_mismatch")
+        self.assertEqual(driver.virtual_send("contact-02", "different body")["error"],
+                         "submission_context_mismatch")
+        self.assertEqual(client.submits, 0)
+
+    def test_disabled_fixture_send_control_blocks_virtual_submit(self):
+        client = FakeChatClient(self.root, submit_enabled=False)
+        _, driver, bridge, _ = self.build(client=client)
+        self.assertTrue(bridge.inspect()["ok"])
+        self.assertEqual(driver.virtual_send("contact-02", self.DRAFT)["error"],
+                         "submit_control_unavailable")
+        self.assertEqual(client.submits, 0)
+
+    def test_unconfirmed_record_pauses_without_resend(self):
+        client = FakeChatClient(self.root, wrong_record=True)
+        _, _, bridge, ledger = self.build(client=client)
+        self.assertTrue(bridge.inspect()["ok"])
+        op = bridge.prepare_message("contact-02", self.DRAFT)["approval_id"]
+        self.assertTrue(bridge.approve(op)["ok"])
+        result = bridge.execute(op)
+        self.assertEqual(result["submission_state"], "unresolved")
+        self.assertTrue(result["pause"])
+        self.assertEqual(client.submits, 1)
+        self.assertEqual(ledger.state(op).state, "unresolved")
+
+    def test_ambiguous_contact_cannot_be_bound(self):
+        client = FakeChatClient(self.root, contact="Alex")
+        _, _, bridge, _ = self.build(client=client)
+        self.assertTrue(bridge.inspect()["ok"])
+        self.assertEqual(bridge.prepare_message("contact-02", self.DRAFT)["error"],
+                         "recipient_not_verified_in_current_chat")
+
+    def test_recovery_without_fresh_observation_pauses(self):
+        _, _, _, ledger = self.build()
+        ledger.append("dispatching", op_id="op-restart", recipient_id="contact-02",
+                      message_sha256=digest_of(self.DRAFT),
+                      message_chars=len(self.DRAFT), baseline_count=0)
+        fresh = FakeChatClient(self.root, existing=[self.DRAFT])
+        _, _, restarted, _ = self.build(client=fresh)
+        report = restarted.recover_submissions()
+        self.assertEqual(report["pending_pause"], 1)
+        self.assertFalse(report["recovered"][0]["confirmed"])
+        self.assertFalse(report["recovered"][0]["resent"])
+        self.assertEqual(fresh.submits, 0)
 
 
 if __name__ == "__main__":

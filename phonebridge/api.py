@@ -35,7 +35,8 @@ NO_RETRY_ERRORS = frozenset({
     "submission_requires_approval", "submit_guard_unavailable",
     "paused_pending_readback", "approval_not_durable",
     "submission_already_processed", "submission_digest_mismatch",
-    "real_message_sending_disabled",
+    "real_message_sending_disabled", "submit_control_unavailable",
+    "submission_context_mismatch", "virtual_submission_not_confirmed",
 })
 
 
@@ -245,6 +246,12 @@ class CoreAPI:
         if not isinstance(result, dict):
             result = fail("invalid_driver_result")
         if not result.get("ok"):
+            # A failed submission can still carry pause=True (lost receipt,
+            # unconfirmed record). That must be a real pause, not just a field
+            # in the response, otherwise the next write would go through.
+            if result.get("pause"):
+                self._paused = True
+                self._pause_reason = result.get("error") or "submission_receipt_lost"
             return {**result, "retry": self.governor.note_failure(
                 action, kind, result.get("error"))}
         self.governor.note_success()
@@ -254,6 +261,9 @@ class CoreAPI:
         evidence = result.get("verification")
         if isinstance(evidence, dict):
             verification = {**verification, **evidence}
+            if evidence.get("unclear") is True:
+                verification = {**verification, "outcome": "unclear", "pause": True,
+                                "automatic_retry": False}
         if before is not None:
             after = self._record_count(self.bridge)
             if after is not None and after > before:

@@ -44,4 +44,6 @@ XCUITest 直接操作自有 App，模拟发送发生在 App 的内存里。当�
 
 提交前拦截复验脚本为 `scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>`：它**不带** `pb-disable-submit` 启动夹具，使 Send 按钮处于启用状态，按层级定位并点击该控件，验证在派发交互命令前返回 `submission_requires_approval`、无重试建议、记录增量为零，最后输出 `guard_passed` 并把夹具恢复为禁用提交。常规启动的提交按钮不再能被通用点击触发；[评审回复](reviews/711ab2a-response.md) 记录了该修复。
 
-仅允许 6 个设备交互／诊断工具。驱动准入先通过 `simctl` 清单和会话返回字段双重确认目标是 Simulator；每次交互前重新捕获层级并确认前台是自有夹具、截图与层级均为本次结果；握手和调用有硬超时（默认 15 秒，`--bridge-timeout` 可调），断线会释放会话。点击、滑动、输入和 Home 键默认拒绝，只有操作者在可信终端启动服务时追加 `--allow-xcode-interactions` 才启用，发送消息始终禁用。会话在服务结束时关闭。`--fixture-bundle` 可指定自有夹具的 bundle ID。边界说明见 [安全边界](security.md)，驱动用法见 [README](../README.md)。
+G2 完整可写验收脚本为 `scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>`：服务同时带 `--allow-xcode-interactions`、`--allow-fixture-virtual-submit`、`--require-approval-isolation`、实际令牌与持久化台账；脚本验证未审批通用点击被事前拒绝、无令牌自批被拒、目标／正文／上下文变更失效、批准后只新增一条可归属的合成记录、重放被拒、MCP 服务重启后 in-flight 操作暂停且不重发，共 36 项判据，输出 `g2_passed`。结果见 [测试报告](test-report.md)。
+
+仅允许 6 个设备交互／诊断工具。驱动准入先通过 `simctl` 清单和会话返回字段双重确认目标是 Simulator；每次交互前重新捕获层级并确认前台是自有夹具、截图与层级均为本次结果；握手和调用有硬超时（默认 15 秒，`--bridge-timeout` 可调），断线会释放会话。点击、滑动、输入和 Home 键默认拒绝，只有操作者在可信终端启动服务时追加 `--allow-xcode-interactions` 才启用。`--allow-fixture-virtual-submit` 是第二个显式开关，只允许唯一提交门在**自有合成夹具**内生成一条合成记录（`simulated: true` / `real_message_sent: false`）；它要求完整审批隔离，默认关闭，夹具以 `pb-disable-submit` 启动时不生效。**真实消息发送始终禁用**。两个验收脚本都会在结束时把夹具恢复为 `pb-disable-submit`。会话在服务结束时关闭。`--fixture-bundle` 可指定自有夹具的 bundle ID。边界说明见 [安全边界](security.md)，驱动用法见 [README](../README.md)。
