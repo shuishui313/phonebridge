@@ -191,6 +191,22 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **边界声明**：历史章节中的「12 个工具」是本轮之前的契约快照，不作为当前数量。本轮只实现路由决策与合成只读能力，**没有验证真实 App Intents／快捷指令能否触发、参数与用户交互如何、结果如何回读**；系统或第三方 App 的公开动作在实测前一律不列入能力清单。通道 B 的 Simulator 与 G2 证据不受影响。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、Hark 客户端端到端、真实 Codex 模型编排、真机与真实第三方 App 仍未验证。
 
+## 2026-11-11 追加 · 外部托管审批端点与真实 macOS 具名 ACL
+
+评审 `711ab2a` 指出 `--approval-uid` 在当前 0700 目录 / 0600 套接字模型下默认不可连接，因此降级为 `external_uid_unverified`。本轮实现该评审给出的前置条件「外部托管端点加 OS ACL」，但**没有把真实不同 UID 进程验收冒充为通过**。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 具名 ACL 授权 | `phonebridge/hosted.py` 在服务启动时给一个具名审批 UID 的目录加 `list,search,add_file,delete_child,readattr,readextattr,readsecurity`、套接字加 `read,write`（macOS `chmod +a`）；`ls -lde` 实测可见 `user:nobody allow ...` 两类条目，`hosted_acl_verified: true`。POSIX 目录 0700、套接字 0600 保持，不放宽、不授权给 everyone。 |
+| fail closed | 注入失败的授权替身后 `ApprovalEndpoint.start()` 抛 `PermissionError`，已创建的套接字被清理；缺令牌、缺 `--approval-uid`、或服务账号自身 UID 都拒绝启动。 |
+| 逐连接校验 | 对端 UID 与令牌每次连接都校验：正确 UID + 正确令牌可批准并产生一条可归属记录，重放被拒；错误 UID 返回 `approval_peer_not_trusted`；缺令牌返回 `approval_token_required`。 |
+| 客户端不轻信 ACL | `approval_request(hosted=True)` 仍校验套接字类型、属主为服务账号、目录与套接字都不全局可写；属主不符或目录全局可写一律 `ValueError` 拒绝连接。 |
+| 隔离披露 | 外部托管 + 实际令牌 → `token+external_uid` 且 `approval_isolated: true`；未开启 hosted 的 `--approval-uid` 仍是 `external_uid_unverified` 且 `approval_isolated: false`；`--require-approval-isolation` 仍只认令牌 + 持久化台账。 |
+| 可复跑证据 | `scripts/hosted-approval-spike.py` **13 项判据全过、`hosted_passed: true`**，含真实 ACL 条目、布局、隔离升级、命名审批者批准、错误 UID／令牌拒绝、重放拒绝与非 hosted 对照。`cross_uid_process_verified: false`。 |
+| 回归 | `tests/test_hosted_approvals.py` 10 项；Python 全套 **203 项**、v0.2 归档 **10 项**通过；lints 与 `git diff --check` 干净。 |
+
+**边界声明**：ACL 授权与 `ls -lde` 核验是真实 OS 操作，但证据里的审批对端 UID 由注入的 `peer_uid_fn` 模拟；以真实的另一个 UID 运行审批 CLI 需要现场授权，本轮未做，故「真实跨账号审批验收」仍为待办。具名 ACL 只在 macOS 实现，其他平台返回 `acl_platform_unsupported` 并拒绝启动。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

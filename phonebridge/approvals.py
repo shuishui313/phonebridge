@@ -15,6 +15,7 @@ from typing import Any
 
 from .core import PhoneBridge
 from .drivers import fail
+from .hosted import grant_approver_access, verify_layout
 from .mcp import read_message, write_message
 from .operator import private_path
 
@@ -46,26 +47,36 @@ class _UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 class ApprovalEndpoint:
     """Trusted-side approval channel.
 
-    ``token`` is the locally usable isolation control. ``required_uid`` only
-    works when the endpoint is hosted externally with extra OS ACLs: a
-    different UID cannot otherwise reach this service's 0700 directory and
-    0600 socket. Leaving both unset is only acceptable for the Mock demo,
-    and is disclosed in status.
+    ``token`` is the locally usable isolation control. ``required_uid`` alone
+    is only a peer check: a different UID cannot reach the service's 0700
+    directory and 0600 socket, so it stays ``external_uid_unverified``.
+
+    With ``hosted=True`` the operator explicitly opts into an externally
+    hosted endpoint: the service grants one named approver UID filesystem
+    ACLs on the directory and socket at startup, fails closed if that grant
+    fails, and still checks the peer UID on every connection. It requires a
+    token as well, so the isolation mode becomes ``token+external_uid``.
     """
 
     def __init__(self, bridge: PhoneBridge, path: str, *, token: str | None = None,
-                 required_uid: int | None = None, peer_uid_fn=None):
+                 required_uid: int | None = None, peer_uid_fn=None,
+                 hosted: bool = False, acl_runner=None):
         self.bridge = bridge
         self.path = Path(path)
         self.token = token
         self.required_uid = int(required_uid) if required_uid is not None else None
         self.peer_uid_fn = peer_uid_fn or peer_credential_uid
+        self.hosted = bool(hosted)
+        self.acl_runner = acl_runner
+        self.acl_status: dict = {}
         self._server = None
         self._thread = None
         self._socket_identity = None
 
     @property
     def isolation_mode(self) -> str:
+        if self.hosted and self.acl_status.get("ok"):
+            return "token+external_uid"
         if self.token:
             return "token"
         if self.required_uid is not None:
@@ -77,17 +88,23 @@ class ApprovalEndpoint:
         return self.isolation_mode != "demo"
 
     def start(self):
+        if self.hosted:
+            if self.required_uid is None:
+                raise PermissionError("A hosted approval endpoint requires an approver UID.")
+            if not self.token:
+                raise PermissionError("A hosted approval endpoint requires an approval token.")
         if self.required_uid is not None and self.required_uid == os.getuid():
             raise PermissionError(
                 "Approval isolation requires a UID different from the MCP service process.")
         # The service owns its private socket directory; the approver identity
-        # is checked per connection. With required_uid this needs an externally
-        # hosted endpoint and OS ACLs, so it is not counted as isolation.
+        # is checked per connection. Without hosted ACLs, a required_uid is
+        # not counted as isolation.
         target = private_path(self.path)
         if os.path.lexists(target):
             raise FileExistsError(f"approval socket already exists: {target}")
         bridge = self.bridge
         token, required_uid, peer_uid_fn = self.token, self.required_uid, self.peer_uid_fn
+        hosted, acl_runner = self.hosted, self.acl_runner
         bridge.approval_isolated = (self.isolation_mode == "token")
         bridge.approval_isolation_mode = self.isolation_mode
 
@@ -128,6 +145,14 @@ class ApprovalEndpoint:
             info = target.lstat()
             self._socket_identity = (info.st_dev, info.st_ino)
             target.chmod(0o600)
+            if hosted:
+                acl = grant_approver_access(target.parent, target, required_uid,
+                                            runner=acl_runner)
+                self.acl_status = acl
+                if not acl.get("ok"):
+                    raise PermissionError(
+                        "Hosted approval ACL grant failed: " + str(acl.get("error")))
+                bridge.approval_isolation_mode = self.isolation_mode
             server.server_activate()
             worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
             worker.start()
@@ -169,12 +194,22 @@ class ApprovalEndpoint:
 
 def approval_request(path: str, action: str, approval_id: str | None = None,
                      timeout: float = 5, token: str | None = None,
-                     socket_owner_uid: int | None = None) -> dict[str, Any]:
+                     socket_owner_uid: int | None = None,
+                     hosted: bool = False) -> dict[str, Any]:
     owner = os.getuid() if socket_owner_uid is None else int(socket_owner_uid)
-    path = private_path(Path(path), expected_uid=owner)
-    info = path.lstat()
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) != 0o600:
-        raise ValueError("Expected a private approval socket owned by the service account.")
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("The approval socket path must be absolute.")
+    if hosted:
+        layout = verify_layout(target.parent, target, service_uid=owner)
+        if not layout["ok"]:
+            raise ValueError("Hosted approval socket layout is unsafe: "
+                             + ",".join(layout["problems"]))
+    else:
+        target = private_path(target, expected_uid=owner)
+        info = target.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("Expected a private approval socket owned by the service account.")
     message = {"action": action}
     if approval_id:
         message["approval_id"] = approval_id
@@ -182,7 +217,7 @@ def approval_request(path: str, action: str, approval_id: str | None = None,
         message["token"] = token
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
         conn.settimeout(timeout)
-        conn.connect(str(path))
+        conn.connect(str(target))
         with conn.makefile("rwb") as stream:
             write_message(stream, message)
             data = stream.readline(MAX_REPLY + 1)

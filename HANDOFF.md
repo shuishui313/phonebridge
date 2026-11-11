@@ -19,12 +19,14 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 - **步骤 4 通道 A 统一路由（同日继续完成）**：新增 `phonebridge/intents.py`，把「A 优先、B 兜底」从设计原则落成代码：显式公开能力清单、只读合成意图执行与回读、未公开能力只返回路由决策、写意图一律拒绝、A 失败需确认无副作用才可回退、结果不明持久暂停且不自动重试。`CoreAPI` 新增 `intents_list` / `intent_run` 两个动作并在 `phone_status.routing` 披露策略，MCP 工具数由 12 增至 14（原有工具与隐藏别名不变）。`scripts/intent-channel-spike.py` **13 项判据全过、`channel_a_passed: true`**，通道 A 前后合成记录增量为零；`tests/test_intents.py` 11 项，Python 全套 **193 项**、v0.2 10 项通过。**边界**：没有调用真实 App Intents／快捷指令，也不宣称系统或第三方 App 动作可用；真实公开能力仍待现场逐项核实。详见 [测试报告](docs/test-report.md) 与 [架构](docs/architecture.md)。
 
+- **外部托管审批端点（同日继续完成）**：落实评审 `711ab2a` 给出的「外部托管端点加 OS ACL」前置。新增 `phonebridge/hosted.py`（macOS `chmod +a` 给一个具名审批 UID 的目录 `search`、套接字 `read,write`，`ls -lde` 核验，布局校验不放宽 0700/0600），`ApprovalEndpoint` 新增 `hosted` 模式（授权失败 fail closed、逐连接校验对端 UID 与令牌、隔离升级 `token+external_uid`），CLI 新增 `--approval-hosted` 门禁（强制实际令牌 + 不同于服务账号的 `--approval-uid`）。`scripts/hosted-approval-spike.py` **13 项判据全过、`hosted_acl_verified: true`**；`tests/test_hosted_approvals.py` 10 项，Python 全套 **203 项**、v0.2 10 项通过。**边界**：真实 ACL 与核验为真，但审批对端 UID 用注入的凭据函数模拟，`cross_uid_process_verified: false`；真实不同 UID 进程验收仍需现场授权，具名 ACL 仅 macOS 实现。详见 [测试报告](docs/test-report.md) 与 [安全边界](docs/security.md)。
+
 ### 下一阶段
 
 1. **步骤 3 · Hark 客户端端到端（G2 剩余阻塞项）**：主机侧链路已通过（relay 重连、直连与 SSH 回环、四类证据、51 项判据、9 次会话），G2 剩余阻塞项收敛为在 Hark 客户端发起真实 SSH 会话与自然语言任务，并确认真实 Codex 模型能稳定发现并调用 MCP 工具、在 Hark 内回读结果；真实模型工具注入本机不稳定，须在现场环境重新验收，先单列连接／编排问题再判定防重。通道 A 可并行验证自有 App 的无副作用意图。该项通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
-2. **真实跨账号审批验收**：`--approval-uid` 在当前 0700 目录 / 0600 套接字模型下默认不可连接，需先决定并实现外部托管端点加 OS ACL 或外部可信审批设备，再用真实不同 UID 进程验收；现有测试只校验了凭据判定逻辑。 [评审回复](docs/reviews/711ab2a-response.md)
+2. **真实跨账号进程现场验收**：外部托管审批端点与 macOS 具名 ACL 已实现（`--approval-hosted`、`phonebridge/hosted.py`、13 项证据），授权失败 fail closed、POSIX 模式不放宽、逐连接校验对端 UID 与令牌。剩余的是由操作者授权，以真实的另一个 UID 运行审批 CLI 并当场验收；本仓库证据用注入的对端凭据函数验证判定逻辑，不冒充跨账号进程通过。 [评审回复](docs/reviews/711ab2a-response.md) · [测试报告](docs/test-report.md)
 3. **G1 剩余项**：在隔离 Codex 会话中按 `scripts/xcode-mcp-draft-spike.py` 的等价工具序列复核自然语言拟稿，单独记录结果；该项仍为待办，不与自动化脚本结果合并。 [测试报告](docs/test-report.md)
-4. **边界不变**：真实消息发送始终禁用；`--allow-fixture-virtual-submit` 只是自有合成夹具内的验收开关，默认关闭，必须与实际令牌和持久化台账同时启用，不打开真实第三方 App、不接真机。可写联调与真机阶段必须用 `--require-approval-isolation` 启动并配置实际令牌、指定 `--submission-state`；同账号下令牌也不是强隔离。提交结果不明确时先回读，仍无法判定就持久暂停写动作、只读放行，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App、跨账号审批、真实 Codex 模型的 MCP 编排、真实 App Intents／快捷指令与系统或第三方 App 的公开动作、Hark 客户端端到端联调均未验证（主机侧链路与合成只读意图已单独通过，不等于 Hark 完整联调或真实意图通道通过）。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md)
+4. **边界不变**：真实消息发送始终禁用；`--allow-fixture-virtual-submit` 只是自有合成夹具内的验收开关，默认关闭，必须与实际令牌和持久化台账同时启用，不打开真实第三方 App、不接真机。可写联调与真机阶段必须用 `--require-approval-isolation` 启动并配置实际令牌、指定 `--submission-state`；同账号下令牌也不是强隔离。提交结果不明确时先回读，仍无法判定就持久暂停写动作、只读放行，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App、真实不同 UID 的跨账号审批进程、真实 Codex 模型的 MCP 编排、真实 App Intents／快捷指令与系统或第三方 App 的公开动作、Hark 客户端端到端联调均未验证（主机侧链路、合成只读意图与外部托管具名 ACL 已分别通过，不等于 Hark 完整联调、真实意图通道或真实跨账号进程通过）。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 
 **项目名称：** PhoneBridge  

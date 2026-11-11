@@ -41,6 +41,9 @@ def main(argv=None):
     p.add_argument("--approval-token-env", help="Env var holding the trusted-side approval token")
     p.add_argument("--approval-uid", type=int,
                    help="Peer UID check; requires an externally hosted endpoint with OS ACLs")
+    p.add_argument("--approval-hosted", action="store_true",
+                   help="Externally hosted approval endpoint: grant one named approver UID "
+                        "filesystem ACLs and verify the peer UID on every connection")
     p.add_argument("--require-approval-isolation", action="store_true",
                    help="Refuse to start unless an approval token and durable state are configured")
     p.add_argument("--allow-fixture-virtual-submit", action="store_true",
@@ -64,7 +67,8 @@ def main(argv=None):
         token = os.environ.get(args.token_env) if args.token_env else None
         try:
             response = approval_request(args.approval_socket, args.action, args.id,
-                                        token=token, socket_owner_uid=args.socket_owner_uid)
+                                        token=token, socket_owner_uid=args.socket_owner_uid,
+                                        hosted=args.approval_hosted)
         except (OSError, ValueError) as exc:
             print(f"Approval channel unavailable: {type(exc).__name__}", file=sys.stderr)
             return 2
@@ -75,12 +79,20 @@ def main(argv=None):
     if args.allow_xcode_interactions and args.driver != "xcode-mcp":
         p.error("--allow-xcode-interactions requires --driver xcode-mcp")
     token = os.environ.get(args.approval_token_env) if args.approval_token_env else None
+    if args.approval_hosted:
+        if not args.approval_socket:
+            p.error("--approval-hosted needs --approval-socket")
+        if args.approval_uid is None or args.approval_uid == os.getuid():
+            p.error("--approval-hosted needs --approval-uid for an account different "
+                    "from the service account")
+        if not token:
+            p.error("--approval-hosted needs an approval token in --approval-token-env")
     if args.require_approval_isolation:
         if not args.approval_socket:
             p.error("--require-approval-isolation needs --approval-socket")
         if not token:
             p.error("--require-approval-isolation needs a token in --approval-token-env; "
-                    "--approval-uid alone requires an externally hosted approval endpoint")
+                    "--approval-uid alone needs --approval-hosted plus an OS ACL")
         if not args.submission_state:
             p.error("--require-approval-isolation needs durable --submission-state")
     if args.allow_fixture_virtual_submit:
@@ -118,7 +130,8 @@ def main(argv=None):
 
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket, token=token,
-                                  required_uid=args.approval_uid):
+                                  required_uid=args.approval_uid,
+                                  hosted=args.approval_hosted):
                 serve_api()
         else:
             serve_api()

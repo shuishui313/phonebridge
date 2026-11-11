@@ -29,7 +29,8 @@ flowchart TD
 | `phonebridge/intents.py` | 通道 A 的显式公开能力清单与 `ChannelRouter`：只登记自有合成夹具的无副作用只读能力；未公开能力只返回「可走 B」的决策，不自动执行设备动作；写意图直接拒绝；A 失败需确认无副作用才可回退，回读不明则暂停写入且不自动重试。**不调用真实 App Intents 或快捷指令**。 |
 | `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`approve` / `deny` 先持久化再改内存，`execute` 只委托唯一提交门。 |
 | `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移与派发前记录基线（0700 目录 / 0600 文件、`flock`、`fsync`），是审批状态的**唯一事实来源**；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，派发前须确认台账中有 `approved` 事件，恢复只接受可归属到该收件人的新增记录，否则暂停且不自动重发。 |
-| `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离，`--approval-uid` 的对端凭据校验仅适用于外部托管端点，`isolation_mode` 如实披露当前模式。 |
+| `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离。默认 0700 目录 / 0600 套接字下 `--approval-uid` 只披露为 `external_uid_unverified`；`hosted` 模式叠加具名 ACL 与逐连接对端 UID 校验，授权失败 fail closed，隔离升级为 `token+external_uid`。 |
+| `phonebridge/hosted.py` | 外部托管审批端点的 OS 层授权：给一个具名审批 UID 配置并核验目录 `search`、套接字 `read,write` 的文件系统 ACL（macOS `chmod +a` / `ls -lde`），校验目录与套接字仍属服务账号且都不全局可写；其他平台显式返回不支持。 |
 | `phonebridge/drivers.py` | `MockIPhone` 模拟合成私信场景、联系人、输入焦点与记录。`AppleSimulatorDriver` 调用 `xcrun simctl` 读取选定设备状态、启动自有夹具及保存截图。 |
 | `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前拒绝，无法定位即 fail closed；`record_count()` 从当次层级提供记录数。每次新鲜观察后从层级解析合成上下文（`app` / `screen` / `selected_id` / `input_text` / `contacts` / 仅当前联系人的 `messages`），使审批核心无需设备专用分支；`virtual_send` 只在操作者显式开启时由唯一提交门调用，绑定目标与正文并回读确认只新增一条合成记录，**不是真实发送**。 |
 | `phonebridge/relay.py` | 可重连传输：后端进程持有 `CoreAPI`、审批与台账状态，监听 0700 目录内的 0600 Unix 套接字；每次 stdio 连接新建一个 MCP 协议会话，客户端断开或重连不影响服务状态。 |

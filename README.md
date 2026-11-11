@@ -85,7 +85,23 @@ python3 -m phonebridge.cli --driver xcode-mcp --sim-udid '<SIMULATOR_UDID>' serv
 
 `CoreAPI.dispatch`（`phonebridge/api.py`）是 MCP 壳与未来独立 App 壳共用的稳定内部入口。`--task-timeout`（默认 300 秒，从首个状态改变动作计时）、`--action-budget`（默认 40 次）、`--max-read-retries`（默认 5 次）和 `--max-retries`（默认 2 次）限定单任务投入；状态改变后按当次证据回读，结果不明返回 `verification.outcome: unclear` 并**持久暂停所有写动作**，只读仍可用，须由可信侧 `resume_after_readback()` 绑定一次成功的当次回读才恢复。`phone_status` 返回任务快照（含 `paused`），重置任务窗口与解除暂停都不暴露为 MCP 工具。
 
-`--submission-state` 指定 0700 目录内的 0600 JSONL 台账，持久化操作 ID、收件人 ID、正文 SHA-256、派发前记录基线与状态迁移，**不存明文正文**；台账是审批状态的唯一事实来源，派发状态在设备调用前落盘，重启后只接受可归属到该收件人的新增记录为完成证据，无法确认即暂停且不自动重发。`--approval-token-env` 从操作者终端环境读取审批令牌，是本地可用的隔离手段；`--approval-uid` 的对端凭据校验仅适用于外部托管端点加 OS ACL，不单独构成隔离；`--require-approval-isolation` 只认实际存在的令牌并同时要求持久化台账。`phone_status` 的 `submissions.approval_isolated` 与 `approval_isolation_mode` 披露当前状态。未配置令牌时仅用于 Mock 演示，详见 [安全边界](docs/security.md)。
+`--submission-state` 指定 0700 目录内的 0600 JSONL 台账，持久化操作 ID、收件人 ID、正文 SHA-256、派发前记录基线与状态迁移，**不存明文正文**；台账是审批状态的唯一事实来源，派发状态在设备调用前落盘，重启后只接受可归属到该收件人的新增记录为完成证据，无法确认即暂停且不自动重发。`--approval-token-env` 从操作者终端环境读取审批令牌，是本地可用的隔离手段；`--approval-uid` 单独使用时仍披露为 `external_uid_unverified`，因为另一个 UID 默认连不上私有目录与套接字；`--approval-hosted` 才显式开启外部托管端点（具名 ACL + 逐连接对端 UID 校验）；`--require-approval-isolation` 只认实际存在的令牌并同时要求持久化台账。`phone_status` 的 `submissions.approval_isolated` 与 `approval_isolation_mode` 披露当前状态。未配置令牌时仅用于 Mock 演示，详见 [安全边界](docs/security.md)。
+
+默认审批套接字由服务账号独占（0700 目录 / 0600 套接字）。需要另一个系统账号执行审批时，由操作者显式开启外部托管模式；服务启动时给**一个具名审批 UID** 的目录加 `search`、套接字加 `read,write` 文件系统 ACL，`ls -lde` 可核验，授权失败立即拒绝启动。POSIX 模式不放宽，每次连接仍校验对端 UID 与令牌，隔离状态升级为 `token+external_uid`。
+
+```sh
+# 服务侧（macOS 具名 ACL，需实际令牌 + 与服务账号不同的审批 UID）
+python3 -m phonebridge.cli --approval-socket "$PB_DIR/approval.sock" \
+  --approval-token-env PB_HARK_TOKEN --approval-uid "$(id -u nobody)" \
+  --approval-hosted --submission-state "$PB_DIR/submissions.jsonl" serve
+
+# 审批账号侧，socket 属主仍是服务账号
+python3 -m phonebridge.cli --approval-socket "$PB_DIR/approval.sock" \
+  --approval-hosted --socket-owner-uid <SERVICE_UID> \
+  --token-env PB_HARK_TOKEN approvals list
+```
+
+`scripts/hosted-approval-spike.py` 可复跑 13 项判据并输出 `hosted_acl_verified`。**真实以另一个 UID 运行审批 CLI 需要现场授权**；脚本用注入的对端凭据函数验证判定逻辑，`cross_uid_process_verified` 恒为 `false`，不冒充跨账号进程验收。具名 ACL 目前只在 macOS 实现，其他平台返回不支持并拒绝启动。[安全边界](docs/security.md) · [测试报告](docs/test-report.md)
 
 真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截。`scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>` 则跑 G2 完整可写验收（36 项判据：未审批拒绝、目标／正文／上下文变更、批准后恰好一条可归属记录、重放、重启不重发），运行后把夹具恢复为 `pb-disable-submit` 基线。两个脚本都只作用于自有合成夹具，**真实消息发送始终禁用**。 [测试报告](docs/test-report.md) · [实现计划](docs/implementation-plan.md)
 

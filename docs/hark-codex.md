@@ -70,6 +70,6 @@ printf '%s\n' "$PHONEBRIDGE_SOCKET"
 
 3. 在 Hark 的 Codex 会话中继续执行，确认回读中该联系人会话增加一条匹配记录。执行结果会带有 `simulated: true` 和 `real_message_sent: false`。
 
-审批与 Agent 的 MCP 工具分开，套接字仍信任同一个操作系统账号。该配置适用于合成联系人和消息。设备权限、审批隔离与数据处理见 [安全边界](security.md)。
+审批与 Agent 的 MCP 工具分开；默认配置下套接字信任同一个操作系统账号。需要另一个账号审批时，可由操作者显式开启 `--approval-hosted` 外部托管端点（具名 ACL + 逐连接对端 UID 校验），详见 [安全边界](security.md) 与 [README](../README.md)。该配置适用于合成联系人和消息；设备权限与数据处理见 [安全边界](security.md)。
 
 其他 Agent 可以配置同一个 stdio 启动命令，兼容性按客户端分别验证。DeepSeek API 如需使用，由上层 Agent 单独接入。PhoneBridge 执行器只接收 MCP 调用。
