@@ -43,7 +43,10 @@ class MCPTests(unittest.TestCase):
         self.initialize()
         r = self.request("tools/list", {})
         self.assertEqual({t["name"] for t in r["result"]["tools"]}, set(PARAMS))
-        self.assertEqual(r["result"]["tools"][-1]["inputSchema"]["required"], ["approval_id"])
+        schemas = {t["name"]: t["inputSchema"] for t in r["result"]["tools"]}
+        self.assertEqual(schemas["phone_execute_operation"]["required"], ["approval_id"])
+        self.assertEqual(schemas["intents_list"]["required"], [])
+        self.assertEqual(schemas["intent_run"]["required"], ["capability"])
 
     def test_notification_no_reply(self):
         self.assertIsNone(self.s.process({"jsonrpc": "2.0", "method": "notifications/initialized"}))
@@ -91,7 +94,7 @@ class MCPTests(unittest.TestCase):
         self.s.serve(src, out)
         responses = out.getvalue().splitlines()
         self.assertEqual(len(responses), 1)
-        self.assertEqual(len(json.loads(responses[0])["result"]["tools"]), 12)
+        self.assertEqual(len(json.loads(responses[0])["result"]["tools"]), 14)
 
     def test_bad_json(self):
         out = io.BytesIO()

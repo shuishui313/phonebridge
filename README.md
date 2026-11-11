@@ -1,6 +1,6 @@
 # PhoneBridge
 
-PhoneBridge 是供 Hark、Codex 等 Agent App 接入的 iPhone 操作能力，也规划自带对话入口的独立 App（[产品需求](docs/product-requirements.md)）。当前 v0.4 提供 Python 虚拟手机、12 个 stdio MCP 工具、独立终端审批和 Apple 官方 Xcode MCP 驱动。消息只写入合成记录；测试 App 为私信与信息流两个自有合成场景。
+PhoneBridge 是供 Hark、Codex 等 Agent App 接入的 iPhone 操作能力，也规划自带对话入口的独立 App（[产品需求](docs/product-requirements.md)）。当前 v0.4 提供 Python 虚拟手机、14 个 stdio MCP 工具、独立终端审批和 Apple 官方 Xcode MCP 驱动。消息只写入合成记录；测试 App 为私信与信息流两个自有合成场景。
 
 ## 快速开始
 
@@ -26,7 +26,7 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
   "$PHONEBRIDGE_PYTHON" -m phonebridge.cli --approval-socket "$PHONEBRIDGE_SOCKET" serve
 ```
 
-打开新的 Codex 会话，通过 `/mcp` 确认 12 个工具。每个服务进程需要自己的审批套接字。SSH 链路需要跨断线保持状态时，改用 `backend --socket <私有 0700 目录>/mcp.sock` 启动常驻后端，再让客户端以 `python3 -m phonebridge.relay stdio --socket <同一路径>` 接入；每次连接重建 MCP 会话，审批与台账状态留在后端。`scripts/hark-codex-spike.py` 与 `scripts/hark-codex-ssh-loopback-spike.py` 可复跑成功／失败／中断／重连四类主机侧证据（直连与临时 key-only 本机 SSH 回环，确定性客户端，不调用真实模型）。Hark 客户端 UI、真实 SSH 会话与真实 Codex 模型的工具编排仍待现场验证，DeepSeek API 可由上层 Agent 单独接入。[Codex MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) · [Hark 接入步骤](docs/hark-codex.md) · [测试报告](docs/test-report.md)
+打开新的 Codex 会话，通过 `/mcp` 确认 14 个工具（原 12 项设备与消息工具，加上 `intents_list` / `intent_run` 两个通道 A 只读意图工具）。每个服务进程需要自己的审批套接字。SSH 链路需要跨断线保持状态时，改用 `backend --socket <私有 0700 目录>/mcp.sock` 启动常驻后端，再让客户端以 `python3 -m phonebridge.relay stdio --socket <同一路径>` 接入；每次连接重建 MCP 会话，审批与台账状态留在后端。`scripts/hark-codex-spike.py` 与 `scripts/hark-codex-ssh-loopback-spike.py` 可复跑成功／失败／中断／重连四类主机侧证据（直连与临时 key-only 本机 SSH 回环，确定性客户端，不调用真实模型）。Hark 客户端 UI、真实 SSH 会话与真实 Codex 模型的工具编排仍待现场验证，DeepSeek API 可由上层 Agent 单独接入。[Codex MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) · [Hark 接入步骤](docs/hark-codex.md) · [测试报告](docs/test-report.md)
 
 ## 试一次模拟发送
 
@@ -52,8 +52,15 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
 | `contacts_list`、`contacts_open(contact)` | 列出合成联系人，按精确名称或固定 ID 打开聊天 |
 | `message_prepare(recipient_id, message)` | 校验当前联系人与已录入的正文，生成待审批提案 |
 | `phone_execute_operation(approval_id)` | 单次执行仍有效且已批准的模拟操作 |
+| `intents_list`、`intent_run(capability)` | 列出显式公开的只读合成意图；按名称执行并回读验证，写意图与未公开能力一律拒绝 |
 
 `wechat_list_contacts`、`wechat_open_chat`、`wechat_prepare_message` 作为历史别名继续可调用，但不出现在 `tools/list` 中。v0.3 入口 `run_phonebridge.py` 保持原有 8 工具协议不变。
+
+## 通道 A：意图优先、通道 B 兜底
+
+`intents_list` 返回显式公开的能力清单与路由策略（`phone_status` 的 `routing` 也披露同一策略）；`intent_run` 只执行登记为无副作用的合成只读意图并回读验证。未公开的能力只返回「可走 B」的路由决策，**不自动执行任何设备动作**；A 失败且确认无副作用才允许回退 B，结果不明则持久暂停写动作、不自动重试，须由可信侧成功回读后才恢复。通道 B 原有的逐笔审批、提交门与通用交互拦截全部保持生效。
+
+能力清单目前只含自有合成夹具的 `device.status` / `contacts.lookup` / `chat.readback`；`message.send` 标记为必须审批、不可直接调用。**本实现没有调用真实 App Intents 或快捷指令，也不宣称任何系统或第三方 App 动作可用**。`scripts/intent-channel-spike.py` 可复跑 13 项判据并输出 `channel_a_passed`。[架构](docs/architecture.md) · [实现计划](docs/implementation-plan.md) · [iOS 可行性](docs/ios-feasibility.md)
 
 ## Apple Simulator 和 iPhone
 

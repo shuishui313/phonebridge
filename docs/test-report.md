@@ -174,6 +174,23 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **边界声明**：证据中的客户端是确定性替身，不是真实模型调用；本机虽安装 Hark 客户端，但本轮未操作其 UI，也未验证真实 Hark SSH 会话。真实 Codex CLI 的 MCP 工具注入在本机多次尝试中不稳定（工具未注入或模型连接超时），因此**不列为通过项**，现场联调时须重新验收。G2 的 36 项真实驱动判据与本节证据互相独立：本节使用 Mock Driver，只验证传输、审批、中断与防重。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、真机、真实第三方 App 与真实消息发送仍未验证。
 
+## 2026-11-11 追加 · 步骤 4 通道 A 统一路由
+
+实现计划里的「双通道路由，A 优先 B 兜底」此前只有设计原则，没有代码。本轮补齐 `phonebridge/intents.py` 的决策层并接入 `CoreAPI` 与 MCP 壳，**只登记自有合成夹具的无副作用只读能力**，不触碰真实 App Intents、快捷指令或第三方 App。`scripts/intent-channel-spike.py` 跑出 **13 项判据全过、`channel_a_passed: true`**。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 能力清单与策略披露 | `intents_list` 返回 `device.status` / `contacts.lookup` / `chat.readback` 三项只读能力和一项标记为必须审批的 `message.send`；`policy.strategy = A_first_B_fallback`，`real_app_intents_verified` 与 `real_shortcuts_invoked` 均为 `false`。`phone_status.routing` 披露同一策略。 |
+| 只读意图执行 | `intent_run` 对已公开能力返回 `channel: A`、`verification.outcome: clear`、`source: intent_readback`；`contacts.lookup` 读到 4 个合成联系人，`chat.readback` 带回新鲜 `revision` 与 `messages`。已公开能力不依赖当前 UI 屏幕，避免把通道 A 变成变相的界面交互。 |
+| 写动作阻断 | `message.send` 返回 `intent_requires_approval`、`routing.channel: blocked`，执行器调用次数为零，安全类拒绝不返回重试建议。 |
+| 未公开能力 | 返回 `intent_not_published`，只给出 `routing.channel: B`、`fallback_allowed: true` 的**决策**，不自动执行任何设备动作；通道 B 原有审批与提交门不变。 |
+| A 失败回退判据 | 注入替身执行器：确认无副作用时 `fallback_allowed: true` 且不暂停，后续设备动作可继续；无法确认无副作用时返回 `pause: true`，下一个写动作被 `paused_pending_readback` 拒绝。 |
+| 结果不明暂停 | 回读 `verified: false` 时返回 `intent_readback_unclear`、`routing.outcome: unclear`、`fallback_allowed: false`、`automatic_retry: false` 并进入持久暂停；可信侧 `resume_after_readback()` 绑定一次成功回读后写动作恢复。 |
+| 无副作用证明 | 整条链路前后 `phone_inspect` 的 `messages` 均为空列表，通道 A 没有产生任何合成记录。 |
+| 契约与回归 | 新增 `intents_list` / `intent_run` 两个 MCP 工具，工具数由 12 增至 14；原 12 个工具、`wechat_*` 隐藏别名与 v0.3 的 8 工具协议全部保留。`tests/test_intents.py` 11 项通过；Python 全套 **193 项**、v0.2 归档 **10 项**通过；lints 与 `git diff --check` 干净。本轮不改动设备驱动，既有 Simulator spike 未重跑。 |
+
+**边界声明**：历史章节中的「12 个工具」是本轮之前的契约快照，不作为当前数量。本轮只实现路由决策与合成只读能力，**没有验证真实 App Intents／快捷指令能否触发、参数与用户交互如何、结果如何回读**；系统或第三方 App 的公开动作在实测前一律不列入能力清单。通道 B 的 Simulator 与 G2 证据不受影响。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、Hark 客户端端到端、真实 Codex 模型编排、真机与真实第三方 App 仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

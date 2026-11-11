@@ -54,7 +54,7 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PHONEBRIDGE_ROOT" -- \
 printf '%s\n' "$PHONEBRIDGE_SOCKET"
 ```
 
-从 Hark 的 SSH 会话连接同一主机和账号，运行 `codex`，再用 `/mcp` 查看 `phonebridge-v04` 的 12 项工具。每个同时运行的服务需要一个独立的审批套接字路径。系统清理临时目录后，重新创建私有目录并更新该配置。[Codex MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+从 Hark 的 SSH 会话连接同一主机和账号，运行 `codex`，再用 `/mcp` 查看 `phonebridge-v04` 的 14 项工具（原 12 项设备与消息工具，加上 `intents_list` / `intent_run` 两个通道 A 只读意图工具）。每个同时运行的服务需要一个独立的审批套接字路径。系统清理临时目录后，重新创建私有目录并更新该配置。[Codex MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 
 ## 发送一条模拟消息
 

@@ -28,6 +28,8 @@ PARAMS: dict[str, tuple[str, ...]] = {
     "contacts_open": ("contact",),
     "message_prepare": ("recipient_id", "message"),
     "phone_execute_operation": ("approval_id",),
+    "intents_list": (),
+    "intent_run": ("capability",),
 }
 
 # Historical tool names stay callable for existing MCP clients, but are not advertised.
@@ -50,6 +52,8 @@ DESCRIPTIONS = {
     "contacts_open": "Open synthetic fixture contact by exact name or stable ID. Reject ambiguity.",
     "message_prepare": "Prepare virtual message; requires typed draft, current verified recipient. Must be approved through independent local CLI.",
     "phone_execute_operation": "Execute one approved virtual message exactly once. Cannot send a real iPhone message.",
+    "intents_list": "List explicitly published, side-effect-free synthetic intents and the A-first routing policy. No real App Intents are claimed.",
+    "intent_run": "Run one published read-only synthetic intent by name and read it back. Write actions and unpublished capabilities are refused.",
 }
 
 NUMERIC = {"x", "y", "start_x", "start_y", "end_x", "end_y"}

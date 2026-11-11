@@ -1,6 +1,6 @@
 # PhoneBridge 架构
 
-Agent 负责理解自然语言和规划操作。PhoneBridge 校验 MCP 请求，执行驱动允许的动作并返回状态，审批由用户在独立终端发出。Hark 经 SSH 接到运行 Agent 的主机，整个执行器可在该主机上工作；`serve` 是一次性 stdio 会话，`backend` 配合 `relay` 让多次 SSH／客户端连接共享同一份服务状态。[Hark 接入](hark-codex.md)
+Agent 负责理解自然语言和规划操作。PhoneBridge 校验 MCP 请求，执行驱动允许的动作并返回状态，审批由用户在独立终端发出。Hark 经 SSH 接到运行 Agent 的主机，整个执行器可在该主机上工作；`serve` 是一次性 stdio 会话，`backend` 配合 `relay` 让多次 SSH／客户端连接共享同一份服务状态。核心在任务引擎里做通道 A 优先、通道 B 兜底的路由决策，B 的设备动作仍逐笔走审批。[Hark 接入](hark-codex.md) · [iOS 可行性](ios-feasibility.md)
 
 ```mermaid
 flowchart TD
@@ -8,7 +8,9 @@ flowchart TD
   Agent -->|stdio MCP| MCP[工具清单、参数校验与调用]
   Operator[用户终端] -->|Unix 套接字| Approvals[审批端点]
   MCP --> API[CoreAPI：任务治理与结果回读]
-  API --> Core[操作状态、审批规则与审计]
+  API --> Router[ChannelRouter：A 优先 / B 兜底]
+  Router -->|只读合成意图| Intents[显式公开能力清单]
+  Router -->|设备动作| Core[操作状态、审批规则与审计]
   Approvals --> Core
   Core --> Ledger[脱敏提交台账：派发状态与恢复]
   Core --> Mock[Python Mock 合成手机]
@@ -23,7 +25,8 @@ flowchart TD
 | --- | --- |
 | `phonebridge/cli.py` | 选择 `mock`、`simctl` 或 `xcode-mcp`，以 `serve`（stdio）或 `backend`（私有 Unix 套接字 + relay）启动 MCP 服务和可选审批端点，或发出审批命令。 |
 | `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果；作为薄壳调用稳定内部 API。 |
-| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限；状态改变后按当次证据回读，结果不明即**持久暂停所有写动作**、只读放行，须由可信侧 `resume_after_readback()` 绑定成功回读才恢复。任务窗口重置、暂停解除与审批动作都不暴露给 Agent。 |
+| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限；`intents_list` / `intent_run` 交给 `ChannelRouter`，其余动作走设备桥接。状态改变后按当次证据回读，结果不明即**持久暂停所有写动作**、只读放行，须由可信侧 `resume_after_readback()` 绑定成功回读才恢复。任务窗口重置、暂停解除与审批动作都不暴露给 Agent。 |
+| `phonebridge/intents.py` | 通道 A 的显式公开能力清单与 `ChannelRouter`：只登记自有合成夹具的无副作用只读能力；未公开能力只返回「可走 B」的决策，不自动执行设备动作；写意图直接拒绝；A 失败需确认无副作用才可回退，回读不明则暂停写入且不自动重试。**不调用真实 App Intents 或快捷指令**。 |
 | `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`approve` / `deny` 先持久化再改内存，`execute` 只委托唯一提交门。 |
 | `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移与派发前记录基线（0700 目录 / 0600 文件、`flock`、`fsync`），是审批状态的**唯一事实来源**；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，派发前须确认台账中有 `approved` 事件，恢复只接受可归属到该收件人的新增记录，否则暂停且不自动重发。 |
 | `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离，`--approval-uid` 的对端凭据校验仅适用于外部托管端点，`isolation_mode` 如实披露当前模式。 |

@@ -17,7 +17,7 @@ PhoneBridge 第一阶段以 iPhone 和 iOS 27 为目标。测试目标分三层�
 | A · 意图通道 | App Intents / 快捷指令，调用系统或 App 显式公开的动作 | 「给妈妈发短信说我不回家吃饭」→ 系统「发送信息」动作 | 本机即可运行；Mac 上可用 `shortcuts run` 触发 | 只能做被公开的动作；多数第三方私信 App 不公开此类接口，未验证 |
 | B · 设备接管通道 | 通用 UI 接管：观察屏幕 → 合成点击/滑动/输入 → 回读验证 | 操作任意 App 的任意界面 | iOS 27+ 可走 Xcode 官方 mcpbridge / Device Hub 协议；iOS 17.4–26 社区用 WebDriverAgent 自签 Helper | 需 USB 配对、开发者模式等设置；真机阶段另行授权 |
 
-路由原则：能用 A 就不用 B（更稳、更快、不依赖 UI 变化）；A 不可用时才走 B。两条通道统一经过 PhoneBridge 的审批、验证、预算与审计层，Agent 入口不变。
+路由原则：能用 A 就不用 B（更稳、更快、不依赖 UI 变化）；A 不可用时才走 B。两条通道统一经过 PhoneBridge 的审批、验证、预算与审计层，Agent 入口不变。核心已实现该决策层（`phonebridge/intents.py`，见[架构](architecture.md)），但能力清单目前只登记自有合成夹具的只读能力；真实 App Intents／快捷指令以及系统或第三方 App 的公开动作仍待逐项实测。
 
 ### 社区公开方案调研结论（2026-11-10，仅阅读公开文档，未复制代码，文档不记录具体项目名称）
 

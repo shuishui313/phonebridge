@@ -12,6 +12,7 @@ from typing import Any
 
 from .core import PhoneBridge, valid_utf8
 from .drivers import fail
+from .intents import ChannelRouter
 
 # action -> (core method, argument names, kind)
 # kind: read (no device change), mutating (changes device state), critical (submission)
@@ -28,7 +29,12 @@ ACTION_SPECS: dict[str, tuple[str, tuple[str, ...], str]] = {
     "contacts_open": ("open_chat", ("contact",), "mutating"),
     "message_prepare": ("prepare_message", ("recipient_id", "message"), "mutating"),
     "phone_execute_operation": ("execute", ("approval_id",), "critical"),
+    "intents_list": ("intent_capabilities", (), "read"),
+    "intent_run": ("intent_run", ("capability",), "read"),
 }
+
+# Channel A actions live on CoreAPI rather than on the device bridge.
+INTENT_ACTIONS = frozenset({"intents_list", "intent_run"})
 
 NUMERIC = {"x", "y", "start_x", "start_y", "end_x", "end_y"}
 NO_RETRY_ERRORS = frozenset({
@@ -37,6 +43,7 @@ NO_RETRY_ERRORS = frozenset({
     "submission_already_processed", "submission_digest_mismatch",
     "real_message_sending_disabled", "submit_control_unavailable",
     "submission_context_mismatch", "virtual_submission_not_confirmed",
+    "intent_requires_approval", "intent_readback_unclear",
 })
 
 
@@ -122,10 +129,11 @@ class CoreAPI:
 
     def __init__(self, bridge: PhoneBridge | None = None, *, time_limit: float = 300.0,
                  action_budget: int = 40, max_read_retries: int = 5,
-                 max_retries: int = 2, clock=None):
+                 max_retries: int = 2, clock=None, router: ChannelRouter | None = None):
         if time_limit <= 0 or action_budget < 1 or max_read_retries < 1 or max_retries < 0:
             raise ValueError("invalid task limits")
         self.bridge = bridge if bridge is not None else PhoneBridge()
+        self.router = router if router is not None else ChannelRouter()
         self.governor = TaskGovernor(time_limit=time_limit, action_budget=action_budget,
                                      max_read_retries=max_read_retries,
                                      max_retries=max_retries, clock=clock)
@@ -149,7 +157,16 @@ class CoreAPI:
         task = {**self.governor.snapshot(), "paused": self._paused,
                 "pause_reason": self._pause_reason}
         return {**self.bridge.status(), "task": task,
-                "submissions": self.bridge.submission_summary()}
+                "submissions": self.bridge.submission_summary(),
+                "routing": self.router.policy()}
+
+    def intent_capabilities(self) -> dict:
+        """Channel A catalog; read-only and never invokes real App Intents."""
+        return self.router.capabilities()
+
+    def intent_run(self, capability: str) -> dict:
+        """Run one published side-effect-free intent with a fresh readback."""
+        return self.router.run(capability, self.bridge)
 
     @staticmethod
     def _record_count(bridge) -> int | None:
@@ -239,8 +256,9 @@ class CoreAPI:
         if action == "phone_status":
             return self.status()
         before = self._record_count(self.bridge) if kind == "mutating" else None
+        target = self if action in INTENT_ACTIONS else self.bridge
         try:
-            result = getattr(self.bridge, method)(*[args[field] for field in fields])
+            result = getattr(target, method)(*[args[field] for field in fields])
         except Exception:
             result = fail("internal_tool_failure")
         if not isinstance(result, dict):

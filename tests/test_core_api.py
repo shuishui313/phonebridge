@@ -41,7 +41,7 @@ class CoreAPITests(unittest.TestCase):
                                    "clientInfo": {"name": "x", "version": "1"}}})
         server.process({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools = server.process({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]
-        self.assertEqual(len(tools), 12)
+        self.assertEqual(len(tools), 14)
 
     def test_dispatch_validation_and_no_approval_actions(self):
         api = self.api(action_budget=100, max_read_retries=100)

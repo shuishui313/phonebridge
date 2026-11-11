@@ -88,7 +88,7 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(result["protocolVersion"], "2025-06-18")
         send("notifications/initialized", notification=True)
         names = {tool["name"] for tool in send("tools/list")["tools"]}
-        self.assertEqual(len(names), 12)
+        self.assertEqual(len(names), 14)
         self.assertIn("message_prepare", names)
         self.assertNotIn("wechat_prepare_message", names)
         self.assertNotIn("approval_approve", names)
