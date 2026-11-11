@@ -103,6 +103,8 @@ python3 -m phonebridge.cli --approval-socket "$PB_DIR/approval.sock" \
 
 `scripts/hosted-approval-spike.py` 可复跑 13 项判据并输出 `hosted_acl_verified`。**真实以另一个 UID 运行审批 CLI 需要现场授权**；脚本用注入的对端凭据函数验证判定逻辑，`cross_uid_process_verified` 恒为 `false`，不冒充跨账号进程验收。具名 ACL 目前只在 macOS 实现，其他平台返回不支持并拒绝启动。[安全边界](docs/security.md) · [测试报告](docs/test-report.md)
 
+现场真实进程验收入口是 `scripts/cross-uid-approval-spike.py`：在具名 ACL 之上，以真实的另一个 UID 运行审批客户端并核对 OS 对端凭据，令牌从具名可读文件加载、不进子命令。本机非交互式 `sudo` 需要密码，脚本会如实输出 `outcome: blocked` 与现场复跑命令，**不索取密码、不绕过提权，也不把替身彩排记为真实进程验收**。
+
 真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截。`scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>` 则跑 G2 完整可写验收（36 项判据：未审批拒绝、目标／正文／上下文变更、批准后恰好一条可归属记录、重放、重启不重发），运行后把夹具恢复为 `pb-disable-submit` 基线。两个脚本都只作用于自有合成夹具，**真实消息发送始终禁用**。 [测试报告](docs/test-report.md) · [实现计划](docs/implementation-plan.md)
 
 `--allow-fixture-virtual-submit` 是操作者启动服务时显式给出的第二个开关，只允许唯一提交门在自有合成夹具内生成一条合成记录；CLI 强制它同时具备 `--driver xcode-mcp`、`--allow-xcode-interactions` 与 `--require-approval-isolation`（实际令牌 + 持久化台账）。默认关闭，Agent 无法自行开启，夹具以 `pb-disable-submit` 启动时也不生效。驱动准入会双重确认目标是 Apple Simulator、每次交互前重新观察并确认前台是夹具，断线即释放会话。状态、观察（本地截图 + UI 层级）和激活已安装夹具默认可用；点击、滑动、输入、Home 键默认拒绝。Xcode 的 Agent 批准不等于 PhoneBridge 的操作审批，详见 [安全边界](docs/security.md)。普通 iOS App 受系统沙箱约束，真机与真实第三方 App 验证属于独立阶段。[Apple Simulator 指南](docs/apple-simulator.md) · [iOS 可行性](docs/ios-feasibility.md)

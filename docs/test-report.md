@@ -207,6 +207,22 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **边界声明**：ACL 授权与 `ls -lde` 核验是真实 OS 操作，但证据里的审批对端 UID 由注入的 `peer_uid_fn` 模拟；以真实的另一个 UID 运行审批 CLI 需要现场授权，本轮未做，故「真实跨账号审批验收」仍为待办。具名 ACL 只在 macOS 实现，其他平台返回 `acl_platform_unsupported` 并拒绝启动。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
 
+## 2026-11-11 追加 · 真实跨 UID 审批验收入口与本机阻碍
+
+外部托管端点与具名 ACL 完成后的剩余条件是「以真实的另一个 UID 运行审批 CLI」。本轮先探测本机能力，再把不依赖该条件的工程工作全部做完，**没有把替身彩排记为真实进程通过**。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 本机能力探测 | `sudo -n -u nobody /usr/bin/id -u` 返回 `sudo: a password is required`，非交互式切换 UID 不可用；`python3 scripts/cross-uid-approval-spike.py --probe-only` 输出 `sudo_non_interactive_available: false`。 |
+| 现场一键脚本 | 新增 `scripts/cross-uid-approval-spike.py`：在具备 sudo 凭据的主机上自动建共享代码目录、私有 0700 服务目录、仅具名审批 UID 可读的令牌文件，启动 hosted 端点（真实 ACL + 默认 `peer_credential_uid`），以审批 UID 运行 `child.py` 完成批准／重放／缺令牌三类调用，并验证服务账号自身 UID 被拒、令牌不进入子命令、ACL 条目与布局、执行后恰好一条可归属记录。 |
+| 阻碍如实记录 | 本机运行输出 `outcome: blocked`、`cross_uid_process_verified: false`、`blocker: sudo_non_interactive_unavailable` 与现场复跑命令；退出 0 表示「受阻未验收」，不冒充通过。 |
+| 替身彩排 | `tests/test_cross_uid_spike.py` 5 项：受阻分支、探测输出、子命令不含令牌、子进程失败／坏输出处理，以及用注入的 runner 与 rehearsal hook 串联整条逻辑（12 项判据全过）。彩排证据固定标注 `approver_process_real: false`、`cross_uid_process_verified: false`。 |
+| 回归 | Python 全套 **208 项**、v0.2 归档 **10 项**；lints 与 `git diff --check` 干净。 |
+
+**已知问题**：`tests/test_hark_spike.py` 的 SSH 回环链路测试存在偶发连接竞态，三轮全套回归中一轮失败（`failure` / `reconnect` 证据为 false，临时 sshd 已就绪但个别阶段连接异常），重跑通过；与本轮改动无关，待单独加固。
+
+**边界声明**：真实跨 UID 进程验收仍未完成，需要操作者在有 sudo 凭据的终端执行现场命令；脚本不索取密码、不做提权绕过。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。
