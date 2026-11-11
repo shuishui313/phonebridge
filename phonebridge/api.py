@@ -31,8 +31,12 @@ ACTION_SPECS: dict[str, tuple[str, tuple[str, ...], str]] = {
 }
 
 NUMERIC = {"x", "y", "start_x", "start_y", "end_x", "end_y"}
-EVIDENCE_KEYS = frozenset({"screen", "revision", "sha256", "hierarchy_path",
-                           "foreground_bundle", "messages", "input_text", "app", "contact"})
+NO_RETRY_ERRORS = frozenset({
+    "submission_requires_approval", "submit_guard_unavailable",
+    "paused_pending_readback", "approval_not_durable",
+    "submission_already_processed", "submission_digest_mismatch",
+    "real_message_sending_disabled",
+})
 
 
 class TaskGovernor:
@@ -93,12 +97,14 @@ class TaskGovernor:
             self._read_run = 0
             return None
 
-    def note_failure(self, action: str, kind: str) -> dict:
+    def note_failure(self, action: str, kind: str, error: str | None = None) -> dict:
         with self._lock:
             self._failure_run = self._failure_run + 1 if self._last_failure == action else 1
             self._last_failure = action
             if kind == "critical":
                 return {"allowed": False, "reason": "submission_requires_manual_readback"}
+            if error in NO_RETRY_ERRORS:
+                return {"allowed": False, "reason": "non_retryable_security_error"}
             if self._failure_run > self.max_retries:
                 return {"allowed": False, "reason": "retry_limit_reached",
                         "attempt": self._failure_run, "limit": self.max_retries}
@@ -122,6 +128,8 @@ class CoreAPI:
         self.governor = TaskGovernor(time_limit=time_limit, action_budget=action_budget,
                                      max_read_retries=max_read_retries,
                                      max_retries=max_retries, clock=clock)
+        self._paused = False
+        self._pause_reason: str | None = None
 
     @staticmethod
     def _validate(action: str, args: Any) -> dict | None:
@@ -137,13 +145,25 @@ class CoreAPI:
         return None
 
     def status(self) -> dict:
-        return {**self.bridge.status(), "task": self.governor.snapshot(),
+        task = {**self.governor.snapshot(), "paused": self._paused,
+                "pause_reason": self._pause_reason}
+        return {**self.bridge.status(), "task": task,
                 "submissions": self.bridge.submission_summary()}
 
     @staticmethod
     def _record_count(bridge) -> int | None:
-        """Best-effort count of outbound records, used to detect a bypass."""
+        """Best-effort count of outbound records, used to detect a bypass.
+
+        Drivers report their own count from the current fresh observation;
+        this also works for hierarchy-based device drivers.
+        """
         try:
+            counter = getattr(bridge.driver, "record_count", None)
+            if callable(counter):
+                value = counter()
+                if isinstance(value, int) and not isinstance(value, bool):
+                    return value
+                return None
             messages = getattr(bridge.driver, "messages", None)
             if isinstance(messages, dict):
                 return sum(len(v) for v in messages.values() if isinstance(v, list))
@@ -155,8 +175,39 @@ class CoreAPI:
         return None
 
     def reset_task(self) -> None:
-        """Trusted-side only; the Agent cannot call this through MCP."""
+        """Trusted-side only; the Agent cannot call this through MCP.
+
+        Resetting task limits never clears a pause: that requires one
+        confirmed fresh readback through ``resume_after_readback``.
+        """
         self.governor.reset()
+
+    @staticmethod
+    def _fresh_evidence(observed) -> bool:
+        """A clear outcome needs a concrete observation, not merely a key."""
+        if not isinstance(observed, dict) or observed.get("ok") is not True:
+            return False
+        if observed.get("observation_error"):
+            return False
+        if observed.get("revision") is None:
+            return False
+        if observed.get("hierarchy_path") or observed.get("sha256"):
+            return True
+        return (isinstance(observed.get("messages"), list)
+                and bool(observed.get("screen") or observed.get("app")))
+
+    def resume_after_readback(self) -> dict:
+        """Trusted-side only. Resume writes after one confirmed fresh readback."""
+        try:
+            observed = self.bridge.inspect()
+        except Exception:
+            observed = fail("verification_failed")
+        if not self._fresh_evidence(observed):
+            return fail("readback_not_confirmed")
+        self._paused = False
+        self._pause_reason = None
+        self.governor.note_success()
+        return {"ok": True, "resumed": True}
 
     def _verify(self) -> dict:
         """Read back after a state change; never automatically replay a submission."""
@@ -164,8 +215,7 @@ class CoreAPI:
             observed = self.bridge.inspect()
         except Exception:
             observed = fail("verification_failed")
-        fresh = (isinstance(observed, dict) and observed.get("ok") is True
-                 and any(key in observed for key in EVIDENCE_KEYS))
+        fresh = self._fresh_evidence(observed)
         return {"outcome": "clear" if fresh else "unclear",
                 "pause": not fresh,
                 "automatic_retry": False,
@@ -180,6 +230,8 @@ class CoreAPI:
         if problem:
             return problem
         method, fields, kind = spec
+        if self._paused and kind != "read":
+            return fail("paused_pending_readback", reason=self._pause_reason)
         problem = self.governor.check(action, kind)
         if problem:
             return problem
@@ -193,7 +245,8 @@ class CoreAPI:
         if not isinstance(result, dict):
             result = fail("invalid_driver_result")
         if not result.get("ok"):
-            return {**result, "retry": self.governor.note_failure(action, kind)}
+            return {**result, "retry": self.governor.note_failure(
+                action, kind, result.get("error"))}
         self.governor.note_success()
         if kind == "read":
             return result
@@ -209,4 +262,10 @@ class CoreAPI:
                 verification = {**verification, "submission_bypass_detected": True,
                                 "outcome": "unclear", "pause": True,
                                 "automatic_retry": False}
+        if verification.get("pause"):
+            self._paused = True
+            self._pause_reason = (verification.get("observation_error")
+                                  or ("submission_bypass_detected"
+                                      if verification.get("submission_bypass_detected")
+                                      else "readback_unclear"))
         return {**result, "verification": verification}

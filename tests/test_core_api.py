@@ -173,5 +173,61 @@ class CoreAPITests(unittest.TestCase):
         self.assertFalse(bridge.execute(op_id)["ok"])
 
 
+class PauseStateTests(unittest.TestCase):
+    """Review P1-3: an unclear outcome must actually stop further writes."""
+
+    def test_unclear_readback_blocks_follow_up_writes(self):
+        api = CoreAPI(PhoneBridge(UnclearDriver()))
+        first = api.dispatch("phone_open_app", {"app": "messaging"})
+        self.assertTrue(first["verification"]["pause"])
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+        self.assertEqual(api.dispatch("message_prepare",
+                                      {"recipient_id": "c", "message": "x"})["error"],
+                         "paused_pending_readback")
+        self.assertTrue(api.dispatch("phone_status")["task"]["paused"])
+        self.assertNotEqual(api.dispatch("phone_inspect").get("error"),
+                            "paused_pending_readback")
+
+    def test_reset_task_does_not_clear_pause(self):
+        api = CoreAPI(PhoneBridge(UnclearDriver()))
+        api.dispatch("phone_open_app", {"app": "messaging"})
+        api.reset_task()
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+
+    def test_resume_requires_a_fresh_readback(self):
+        api = CoreAPI(PhoneBridge(UnclearDriver()))
+        api.dispatch("phone_open_app", {"app": "messaging"})
+        self.assertEqual(api.resume_after_readback()["error"], "readback_not_confirmed")
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+
+    def test_resume_after_successful_readback_allows_writes(self):
+        bridge = PhoneBridge(UnclearDriver())
+        api = CoreAPI(bridge)
+        api.dispatch("phone_open_app", {"app": "messaging"})
+        bridge.driver = MockIPhone()  # observation recovers on the trusted side
+        self.assertTrue(api.resume_after_readback()["resumed"])
+        self.assertTrue(api.dispatch("phone_home")["ok"])
+        self.assertFalse(api.dispatch("phone_status")["task"]["paused"])
+
+    def test_weak_evidence_is_not_clear(self):
+        class WeakDriver(MockIPhone):
+            def observe(self):
+                return {"ok": True, "screen": "home"}  # no revision, no content evidence
+
+        api = CoreAPI(PhoneBridge(WeakDriver()))
+        self.assertEqual(api.dispatch("phone_home")["verification"]["outcome"], "unclear")
+        self.assertEqual(api.dispatch("phone_back")["error"], "paused_pending_readback")
+
+    def test_security_rejection_does_not_suggest_retry(self):
+        class SubmitRejectingDriver(MockIPhone):
+            def tap(self, x, y):
+                return {"ok": False, "error": "submission_requires_approval"}
+
+        api = CoreAPI(PhoneBridge(SubmitRejectingDriver()))
+        result = api.dispatch("phone_tap", {"x": .5, "y": .5})
+        self.assertEqual(result["retry"],
+                         {"allowed": False, "reason": "non_retryable_security_error"})
+
+
 if __name__ == "__main__":
     unittest.main()

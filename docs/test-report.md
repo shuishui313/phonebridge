@@ -79,7 +79,8 @@ Xcode 27 环境下 XcodeGen 需要显式 `PRODUCT_NAME` 与 `ALWAYS_SEARCH_USER_
 | 拟稿与回读 | 按稳定 ID `contact.contact-02` / `Casey` 定位合成联系人，聚焦 `chat.input`，`phone_type_text` 输入中文「测试消息」；层级中该输入框 `value` 精确等于「测试消息」。 |
 | 记录增量为零 | 提交按钮标识为 `chat.send.disabled`、不存在 `chat.send`，点击禁用按钮后仍不存在 `chat.message.0`。 |
 | 负面用例 | `message_prepare` 返回 `real_message_sending_disabled`；另起一个不带 `--allow-xcode-interactions` 的服务进程，`phone_tap` 返回 `independent_approval_required`。两处拒绝均生效。 |
-| G1 判据 | 上述全部通过，`g1_passed: true`。等价 MCP 工具序列由自动化脚本执行；隔离的 Codex 会话仍建议在接手时复核一次。 |
+| G1 判据（自动化脚本） | 等价 MCP 工具序列全部通过，`g1_passed: true`，本轮重跑仍通过。 |
+| G1 判据（隔离会话） | 隔离 Codex 会话的自然语言拟稿复核 **仍待办**，不并入脚本结果；接手时按同一序列在 Codex 中复核。 |
 | 会话 ID 修复 | 试跑发现固定会话标识会被 Xcode 判为「recently used」而拒绝；改为每进程默认生成唯一会话 ID，CLI 可用 `--session-id` 显式指定。新增单元测试覆盖。 |
 | 回归 | Python 99 项通过、v0.2 归档 10 项通过、XCUITest 4 项通过。 |
 
@@ -117,6 +118,24 @@ MCP 工具契约未变：仍 12 个工具、参数与别名行为一致。真机
 | 回归 | 重跑 `scripts/xcode-mcp-draft-spike.py` 仍 `g1_passed: true`；XCUITest 4 项全过 `TEST SUCCEEDED`；MCP 工具契约仍为 12 个工具。 |
 
 **边界声明**：未配置令牌或独立 UID 时审批通道仍是同账号演示模式，同 OS 账号下可自由执行 shell 的 Agent 仍可能自批；可写联调与真机阶段必须配置独立 UID 或外部可信审批端。真机、真实第三方 App 与 Hark 联调仍未验证。
+
+## 2026-11-11 追加 · 711ab2a 评审修复
+
+本轮修正[评审记录](reviews/711ab2a.md)全部 5 条发现，并修正上节关于「恢复按目标与操作 ID 核验」的表述：原实现只比正文摘要，未使用收件人也没有记录增量。逐条处理与 4 个决策点的自主决断见[评审回复](reviews/711ab2a-response.md)。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| P1-1 提交前拦截 | `XcodeMCPDriver` 在每次交互前的新鲜层级中定位启用的提交控件（`chat.send` / `compose.post`）；`tap`、`swipe` 起终点命中即在派发交互命令前返回 `submission_requires_approval`，无法定位启用控件时 `submit_guard_unavailable` fail closed。7 项驱动反例覆盖命中、命中 post、禁用变体放行、远离控件放行、无法定位、滑动终点命中、层级记录计数。`CoreAPI` 的事后绕行检测改由驱动 `record_count()` 提供当次观察的记录数，真实驱动也生效。 |
+| 真机拦截验收 | `scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 在**不带** `pb-disable-submit` 的常规启动下实测：`send_button_enabled: true`、`submit_tap_error: submission_requires_approval`、`submit_tap_retry.allowed: false`、`record_increment: false`、`guard_passed: true`；运行后把夹具恢复为禁用提交，不影响 G1 基线。 |
+| P1-2 恢复证据归属 | 台账在 `prepared` / `dispatching` 事件记录该收件人的脱敏记录基线；`submission_evidence` 只接受「目标收件人记录数超过基线且新增记录摘要匹配」为完成证据，无按收件人归属能力的层级驱动一律 `unclear` 并暂停。新增反例证明：其他联系人的同文旧记录、目标联系人的历史同文记录均不再误判为完成；带一条历史记录时回执丢失仍能正确确认（`completed`，记录数 2）。 |
+| P1-3 暂停状态机 | `CoreAPI` 增加持久暂停：回读不明或检测到绕行后，所有写动作返回 `paused_pending_readback`，只读放行；`reset_task()` 不解除；可信侧 `resume_after_readback()` 须绑定一次成功的当次回读。收紧 `_fresh_evidence`：需 `ok`、`revision` 与具体内容证据，仅含证据键名不再判 `clear`。安全类拒绝列入 `NO_RETRY_ERRORS`，不返回重试建议。6 项新增单元测试覆盖。 |
+| P1-4 隔离表述 | 新增 `isolation_mode`（`token` / `external_uid_unverified` / `demo`）；`approval_isolated` 仅在令牌模式为真，`phone_status` 披露模式。`--require-approval-isolation` 只认实际存在的令牌，单独 `--approval-uid` 会被拒绝启动。CLI 与文档写明独立 UID 需外部托管端点加 OS ACL。3 项新增测试覆盖。**真实跨账号审批验收仍未做**。 |
+| P2-5 台账唯一事实来源 | `approve` / `deny` 改为先落盘成功再改内存，写盘失败返回 `approval_not_durable` / `decision_not_durable`；提交门派发前 replay 台账，缺 `approved` 事件一律拒绝。新增反例：注入写盘失败后审批被拒、即使伪造内存批准也无法派发、记录数为零。该条按 P1 处理（与 P1-2 同根因）。 |
+| 单元测试 | 新增 22 项反例（驱动 7、核心 API 6、提交与审批 9），Python 全套 **160 项**、v0.2 归档 10 项通过。 |
+| 回归 | 0b 拟稿试跑仍 `g1_passed: true`；XCUITest 4 项、真实 stdio 端到端与 `git diff --check` / lints 均通过。 |
+| 标注撤回 | 实现计划步骤 2 由「已完成」改为「Mock 与台账层已完成，完整可写验收未过」，真实驱动提交前拦截的完整可写验收列为 G2 阻塞项；G1 拆为脚本通过与隔离会话复核待办两项。 |
+
+**剩余边界**：真实跨账号审批验收、真机、真实第三方 App、Hark 完整联调、隔离 Codex 会话的自然语言拟稿复核均未完成；同账号下令牌也不是强隔离。评审反例使用本地合成数据与替身。
 
 ## 重跑自动测试
 

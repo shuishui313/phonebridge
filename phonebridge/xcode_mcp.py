@@ -43,6 +43,14 @@ ALLOWED_TOOLS = frozenset({
 FIXTURE_BUNDLE = "org.example.phonebridge.fixture"
 APP_BUNDLES = {"fixture": FIXTURE_BUNDLE}
 
+# Enabled submit controls are identified by stable accessibility IDs. Generic
+# taps/swipes must never reach them, whether or not the spike disabled them.
+RECORD_IDENTIFIER = re.compile(r"identifier:\s*'(?:chat\.message|timeline\.post)\.\d+'")
+ELEMENT_IDENTIFIER = re.compile(r"identifier:\s*'([^']*)'")
+ELEMENT_HITPOINT = re.compile(r"hitPoint:\s*\{([\d.]+),\s*([\d.]+)\}")
+SUBMIT_IDENTIFIERS = frozenset({"chat.send", "compose.post"})
+SUBMIT_TOLERANCE = 30.0
+
 
 class BridgeUnavailable(Exception):
     """Raised when the official MCP bridge cannot be reached in time."""
@@ -311,9 +319,37 @@ class XcodeMCPDriver:
             return fail("hierarchy_unavailable")
         bundle = BUNDLE_LINE_PATTERN.search(text)
         window = WINDOW_PATTERN.search(text)
+        submit_points, unlocated = [], False
+        for line in text.splitlines():
+            identifier = ELEMENT_IDENTIFIER.search(line)
+            if not identifier or identifier.group(1) not in SUBMIT_IDENTIFIERS:
+                continue
+            point = ELEMENT_HITPOINT.search(line)
+            if point:
+                submit_points.append((float(point.group(1)), float(point.group(2))))
+            else:
+                unlocated = True  # an enabled submit control we cannot localize
         return {"ok": True,
                 "foreground_bundle": bundle.group(1) if bundle else None,
-                "dimensions": (float(window.group(1)), float(window.group(2))) if window else None}
+                "dimensions": (float(window.group(1)), float(window.group(2))) if window else None,
+                "submit_points": submit_points, "submit_unlocated": unlocated}
+
+    def record_count(self) -> int | None:
+        """Records visible in the current fresh hierarchy; never a cached one."""
+        if not self._last_hierarchy:
+            return None
+        try:
+            text = Path(self._last_hierarchy).read_text(encoding="utf-8")
+        except (OSError, TypeError, ValueError):
+            return None
+        return len(RECORD_IDENTIFIER.findall(text))
+
+    @staticmethod
+    def _submit_guard(points, x: float, y: float):
+        for sx, sy in points:
+            if abs(x - sx) <= SUBMIT_TOLERANCE and abs(y - sy) <= SUBMIT_TOLERANCE:
+                return {"x": sx, "y": sy}
+        return None
 
     def _pre_interaction(self) -> dict:
         captured = self._synthesize("")
@@ -327,8 +363,11 @@ class XcodeMCPDriver:
                         foreground_bundle=info["foreground_bundle"])
         if not info["dimensions"]:
             return fail("screen_dimensions_unavailable")
+        if info["submit_unlocated"]:
+            return fail("submit_guard_unavailable")
         return {"ok": True, "dimensions": info["dimensions"],
-                "foreground_bundle": info["foreground_bundle"]}
+                "foreground_bundle": info["foreground_bundle"],
+                "submit_points": info["submit_points"]}
 
     def _state(self, result: dict, **extra: Any) -> dict:
         digest = None
@@ -408,7 +447,12 @@ class XcodeMCPDriver:
             if not guard.get("ok"):
                 return guard
             width, height = guard["dimensions"]
-            return self._interaction(f"t {round(x * width)} {round(y * height)}", guard=guard)
+            px, py = round(x * width), round(y * height)
+            blocked = self._submit_guard(guard["submit_points"], px, py)
+            if blocked:
+                return fail("submission_requires_approval", interaction="tap",
+                            hit_point=blocked)
+            return self._interaction(f"t {px} {py}", guard=guard)
 
     def swipe(self, sx: float, sy: float, ex: float, ey: float):
         if not self.interaction_approved:
@@ -418,9 +462,16 @@ class XcodeMCPDriver:
             if not guard.get("ok"):
                 return guard
             width, height = guard["dimensions"]
+            start_x, start_y = round(sx * width), round(sy * height)
+            end_x, end_y = round(ex * width), round(ey * height)
+            points = guard["submit_points"]
+            for label, (x, y) in (("start", (start_x, start_y)), ("end", (end_x, end_y))):
+                blocked = self._submit_guard(points, x, y)
+                if blocked:
+                    return fail("submission_requires_approval", interaction=f"swipe_{label}",
+                                hit_point=blocked)
             return self._interaction(
-                f"t {round(sx * width)} {round(sy * height)} f {round(ex * width)} {round(ey * height)} 0.3",
-                guard=guard)
+                f"t {start_x} {start_y} f {end_x} {end_y} 0.3", guard=guard)
 
     def type_text(self, text: str):
         if not self.interaction_approved:

@@ -63,6 +63,9 @@ class MockIPhone:
                 "messages": [dict(m) for m in self.messages[self.selected_id]] if self.screen == "chat" and self.selected_id else [],
                 "screenshot": None}
 
+    def record_count(self):
+        return sum(len(records) for records in self.messages.values())
+
     def resolve_contact_id(self, identity: str) -> str | None:
         """Canonicalize a legacy fixture ID or name without creating new matches."""
         resolved = LEGACY_CONTACT_ALIASES.get(identity, identity)

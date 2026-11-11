@@ -16,7 +16,7 @@ RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-27-2"
 class FakeClient:
     def __init__(self, root: Path, *, foreground_bundle=FIXTURE_BUNDLE, session_ok=True,
                  device_is_simulator=True, device_uuid=UDID, synth_ok=True,
-                 fresh_paths=True, bridge_error=None):
+                 fresh_paths=True, bridge_error=None, extra_lines=""):
         self.root = root
         self.foreground_bundle = foreground_bundle
         self.session_ok = session_ok
@@ -25,6 +25,7 @@ class FakeClient:
         self.synth_ok = synth_ok
         self.fresh_paths = fresh_paths
         self.bridge_error = bridge_error
+        self.extra_lines = extra_lines
         self.capture_index = 0
         self.calls = []
         self.started = False
@@ -41,7 +42,8 @@ class FakeClient:
         hierarchy.write_text(
             f"Application bundle identifier: {self.foreground_bundle}\n"
             " Window, {{0.0, 0.0}, {402.0, 874.0}}, hitPoint: {201.0, 437.0}\n"
-            "  Button, {{16.0, 62.0}, {44.0, 44.0}}, hitPoint: {38.0, 84.0}\n",
+            "  Button, {{16.0, 62.0}, {44.0, 44.0}}, hitPoint: {38.0, 84.0}\n"
+            + self.extra_lines,
             encoding="utf-8",
         )
         screenshot.write_bytes(f"synthetic screenshot {self.capture_index}".encode())
@@ -258,6 +260,78 @@ class XcodeMCPTests(unittest.TestCase):
         self.assertIn("timed out", result["details"])
         self.assertIsNone(client._proc)
         proc.terminate.assert_called_once()
+
+
+class SubmitGuardTests(unittest.TestCase):
+    """Review P1-1: generic interactions must not submit before approval."""
+
+    SEND_LINE = ("  Button, {{270.0, 62.0}, {60.0, 44.0}}, "
+                 "hitPoint: {300.0, 84.0}, identifier: 'chat.send'\n")
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="pb-submit-guard-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def checker(self, udid):
+        return {"ok": True, "runtime": RUNTIME, "device_name": "iPhone 18 Pro"}
+
+    def driver(self, extra_lines):
+        client = FakeClient(self.root, extra_lines=extra_lines)
+        instance = XcodeMCPDriver(UDID, client=client, simulator_checker=self.checker,
+                                  interaction_approved=True)
+        self.addCleanup(instance.close)
+        return instance, client
+
+    def syntheses(self, client):
+        return [args for name, args in client.calls if name == "DeviceInteractionSynthesize"]
+
+    def test_tap_on_enabled_send_is_rejected_before_interaction(self):
+        instance, client = self.driver(self.SEND_LINE)
+        result = instance.tap(300 / 402, 84 / 874)
+        self.assertEqual(result["error"], "submission_requires_approval")
+        self.assertEqual(result["interaction"], "tap")
+        # Only the pre-interaction observation happened; no interaction command.
+        calls = self.syntheses(client)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["interactionCommand"], "")
+
+    def test_tap_away_from_send_is_allowed(self):
+        instance, client = self.driver(self.SEND_LINE)
+        self.assertTrue(instance.tap(38 / 402, 84 / 874)["ok"])
+        self.assertEqual(len(self.syntheses(client)), 2)
+
+    def test_disabled_submit_control_is_not_blocked(self):
+        line = self.SEND_LINE.replace("'chat.send'", "'chat.send.disabled'")
+        instance, _ = self.driver(line)
+        self.assertTrue(instance.tap(300 / 402, 84 / 874)["ok"])
+
+    def test_post_control_is_also_guarded(self):
+        line = self.SEND_LINE.replace("'chat.send'", "'compose.post'")
+        instance, _ = self.driver(line)
+        self.assertEqual(instance.tap(300 / 402, 84 / 874)["error"],
+                         "submission_requires_approval")
+
+    def test_unlocatable_enabled_submit_fails_closed(self):
+        line = "  Button, {{270.0, 62.0}, {60.0, 44.0}}, identifier: 'chat.send'\n"
+        instance, client = self.driver(line)
+        self.assertEqual(instance.tap(38 / 402, 84 / 874)["error"],
+                         "submit_guard_unavailable")
+        self.assertEqual(len(self.syntheses(client)), 1)
+
+    def test_swipe_into_send_is_rejected(self):
+        instance, client = self.driver(self.SEND_LINE)
+        result = instance.swipe(38 / 402, 84 / 874, 300 / 402, 84 / 874)
+        self.assertEqual(result["error"], "submission_requires_approval")
+        self.assertEqual(result["interaction"], "swipe_end")
+        self.assertEqual(len(self.syntheses(client)), 1)
+
+    def test_record_count_uses_current_hierarchy(self):
+        line = self.SEND_LINE + (
+            "  StaticText, {{0.0, 0.0}, {10.0, 10.0}}, identifier: 'chat.message.0'\n")
+        instance, _ = self.driver(line)
+        self.assertTrue(instance.observe()["ok"])
+        self.assertEqual(instance.record_count(), 1)
 
 
 if __name__ == "__main__":

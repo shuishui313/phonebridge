@@ -23,12 +23,12 @@ flowchart TD
 | --- | --- |
 | `phonebridge/cli.py` | 选择 `mock` 或 `simctl`，启动 MCP 会话和可选审批端点，或发出审批命令。 |
 | `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果；作为薄壳调用稳定内部 API。 |
-| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限，状态改变后自动回读，结果不明即暂停。任务窗口重置与审批动作都不暴露给 Agent。 |
-| `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`execute` 只委托唯一提交门。 |
-| `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移（0700 目录 / 0600 文件、`flock`、`fsync`）；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，执行前记录派发状态，执行后读回核验，恢复时禁止自动重发。 |
-| `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；支持令牌与独立 UID 的对端凭据隔离。 |
+| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限；状态改变后按当次证据回读，结果不明即**持久暂停所有写动作**、只读放行，须由可信侧 `resume_after_readback()` 绑定成功回读才恢复。任务窗口重置、暂停解除与审批动作都不暴露给 Agent。 |
+| `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`approve` / `deny` 先持久化再改内存，`execute` 只委托唯一提交门。 |
+| `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移与派发前记录基线（0700 目录 / 0600 文件、`flock`、`fsync`），是审批状态的**唯一事实来源**；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，派发前须确认台账中有 `approved` 事件，恢复只接受可归属到该收件人的新增记录，否则暂停且不自动重发。 |
+| `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离，`--approval-uid` 的对端凭据校验仅适用于外部托管端点，`isolation_mode` 如实披露当前模式。 |
 | `phonebridge/drivers.py` | `MockIPhone` 模拟合成私信场景、联系人、输入焦点与记录。`AppleSimulatorDriver` 调用 `xcrun simctl` 读取选定设备状态、启动自有夹具及保存截图。 |
-| `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。 |
+| `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前拒绝，无法定位即 fail closed；`record_count()` 从当次层级提供记录数。 |
 | `simulator/`、`scripts/` | SwiftUI 测试 App（私信与信息流两个合成场景）、XCUITest、XcodeGen 工程描述与 Apple 测试脚本。 |
 
 ## 模拟发送顺序

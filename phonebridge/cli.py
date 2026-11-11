@@ -38,9 +38,10 @@ def main(argv=None):
     p.add_argument("--audit-path", help="Private metadata-only JSONL audit file")
     p.add_argument("--submission-state", help="Private 0600 JSONL ledger in a 0700 directory")
     p.add_argument("--approval-token-env", help="Env var holding the trusted-side approval token")
-    p.add_argument("--approval-uid", type=int, help="UID allowed to reach the approval channel")
+    p.add_argument("--approval-uid", type=int,
+                   help="Peer UID check; requires an externally hosted endpoint with OS ACLs")
     p.add_argument("--require-approval-isolation", action="store_true",
-                   help="Refuse to start unless approval isolation and durable state are configured")
+                   help="Refuse to start unless an approval token and durable state are configured")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
     ap = sub.add_parser("approvals")
@@ -71,8 +72,9 @@ def main(argv=None):
     if args.require_approval_isolation:
         if not args.approval_socket:
             p.error("--require-approval-isolation needs --approval-socket")
-        if not token and args.approval_uid is None:
-            p.error("--require-approval-isolation needs --approval-token-env or --approval-uid")
+        if not token:
+            p.error("--require-approval-isolation needs a token in --approval-token-env; "
+                    "--approval-uid alone requires an externally hosted approval endpoint")
         if not args.submission_state:
             p.error("--require-approval-isolation needs durable --submission-state")
     driver = None

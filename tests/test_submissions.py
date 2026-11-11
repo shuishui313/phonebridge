@@ -12,7 +12,8 @@ from phonebridge.approvals import ApprovalEndpoint, approval_request
 from phonebridge.cli import main as cli_main
 from phonebridge.core import PhoneBridge
 from phonebridge.drivers import MockIPhone
-from phonebridge.submissions import SimulatedCrash, SubmissionLedger
+from phonebridge.submissions import (SimulatedCrash, SubmissionLedger,
+                                     submission_evidence)
 
 TEXT = "测试消息"
 
@@ -323,6 +324,137 @@ class ApprovalIsolationTests(unittest.TestCase):
             cli_main(["--require-approval-isolation", "serve"])
         with self.assertRaises(SystemExit):
             cli_main(["--require-approval-isolation", "--approval-socket", self.path, "serve"])
+
+    def test_uid_only_mode_is_not_reported_as_isolated(self):
+        other = os.getuid() + 1
+        bridge, _, endpoint = self.endpoint(required_uid=other,
+                                            peer_uid_fn=lambda conn: other)
+        self.assertEqual(endpoint.isolation_mode, "external_uid_unverified")
+        self.assertTrue(endpoint.isolated)  # a control is configured
+        self.assertFalse(bridge.approval_isolated)  # but it is not usable isolation
+        summary = CoreAPI(bridge).status()["submissions"]
+        self.assertFalse(summary["approval_isolated"])
+        self.assertEqual(summary["approval_isolation_mode"], "external_uid_unverified")
+
+    def test_cli_rejects_uid_without_token(self):
+        with self.assertRaises(SystemExit):
+            cli_main(["--require-approval-isolation", "--approval-socket", self.path,
+                      "--approval-uid", str(os.getuid() + 1),
+                      "--submission-state", str(Path(self.t.name) / "s.jsonl"), "serve"])
+
+
+class FailingLedger:
+    def __init__(self, inner):
+        self.inner = inner
+        self.fail_approved = True
+
+    def append(self, event, **fields):
+        if event == "approved" and self.fail_approved:
+            raise OSError("simulated ledger write failure")
+        return self.inner.append(event, **fields)
+
+    def transaction(self):
+        return self.inner.transaction()
+
+    def replay(self):
+        return self.inner.replay()
+
+    def state(self, op_id):
+        return self.inner.state(op_id)
+
+    def summary(self):
+        return self.inner.summary()
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Counter-examples reproduced during the review of 711ab2a."""
+
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory(prefix="pb-review-")
+        self.addCleanup(self.t.cleanup)
+        self.path = str(Path(self.t.name) / "submissions.jsonl")
+
+    def ledger(self):
+        return SubmissionLedger(self.path)
+
+    def test_recovery_ignores_same_text_on_another_contact(self):
+        ledger = self.ledger()
+        driver = MockIPhone()
+        driver.messages["contact-01"].append({"direction": "outbound", "text": TEXT})
+        bridge, op = approved(ledger=ledger, driver=driver,
+                              hooks={"crash_before_send": lambda: None})
+        with self.assertRaises(SimulatedCrash):
+            bridge.execute(op)
+        report = PhoneBridge(driver, ledger=ledger).recover_submissions()
+        self.assertEqual(report["pending_pause"], 1)
+        self.assertFalse(report["recovered"][0]["confirmed"])
+        self.assertEqual(ledger.state(op).state, "unresolved")
+        self.assertEqual(len(driver.messages["contact-02"]), 0)
+
+    def test_recovery_ignores_historical_same_text_on_target(self):
+        ledger = self.ledger()
+        driver = MockIPhone()
+        driver.messages["contact-02"].append({"direction": "outbound", "text": TEXT})
+        bridge, op = approved(ledger=ledger, driver=driver,
+                              hooks={"crash_before_send": lambda: None})
+        with self.assertRaises(SimulatedCrash):
+            bridge.execute(op)
+        report = PhoneBridge(driver, ledger=ledger).recover_submissions()
+        self.assertEqual(report["pending_pause"], 1)
+        self.assertEqual(ledger.state(op).state, "unresolved")
+        self.assertEqual(len(driver.messages["contact-02"]), 1)
+
+    def test_lost_receipt_is_confirmed_against_baseline(self):
+        ledger = self.ledger()
+        driver = MockIPhone()
+        driver.messages["contact-02"].append({"direction": "outbound", "text": "earlier"})
+        bridge, op = approved(ledger=ledger, driver=driver,
+                              hooks={"crash_after_send": lambda: None})
+        with self.assertRaises(SimulatedCrash):
+            bridge.execute(op)
+        report = PhoneBridge(driver, ledger=ledger).recover_submissions()
+        self.assertEqual(report["pending_pause"], 0)
+        self.assertTrue(report["recovered"][0]["confirmed"])
+        self.assertEqual(ledger.state(op).state, "completed")
+        self.assertEqual(len(driver.messages["contact-02"]), 2)
+
+    def test_unattributable_records_stay_unclear(self):
+        class HierarchyDriver:
+            def observe(self):
+                return {"ok": True, "hierarchy_path": "/nonexistent"}
+
+        evidence = submission_evidence(HierarchyDriver(), "contact-02", "0" * 64, 0)
+        self.assertTrue(evidence["unclear"])
+        self.assertFalse(evidence["matched"])
+
+    def test_ledger_write_failure_does_not_allow_dispatch(self):
+        ledger = self.ledger()
+        driver = MockIPhone()
+        bridge, op = prepared(ledger=ledger, driver=driver)
+        failing = FailingLedger(ledger)
+        bridge.submissions.ledger = failing
+        self.assertEqual(bridge.approve(op)["error"], "approval_not_durable")
+        failing.fail_approved = False
+        bridge.proposals[op].approved = True  # simulate a forged in-memory approval
+        self.assertEqual(bridge.execute(op)["error"], "approval_not_durable")
+        self.assertEqual(len(driver.messages["contact-02"]), 0)
+
+    def test_dispatch_requires_durable_approval_event(self):
+        ledger = self.ledger()
+        bridge, op = prepared(ledger=ledger)
+        bridge.proposals[op].approved = True
+        self.assertEqual(bridge.execute(op)["error"], "approval_not_durable")
+
+    def test_bypass_enters_persistent_pause(self):
+        driver = BypassDriver()
+        api = CoreAPI(PhoneBridge(driver, ledger=self.ledger()))
+        api.dispatch("phone_open_app", {"app": "messaging"})
+        api.dispatch("contacts_open", {"contact": "Casey"})
+        api.dispatch("phone_tap", {"x": .5, "y": .9})
+        api.dispatch("phone_type_text", {"text": "unapproved send"})
+        result = api.dispatch("phone_tap", {"x": .5, "y": .9})
+        self.assertTrue(result["verification"]["submission_bypass_detected"])
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
 
 
 if __name__ == "__main__":

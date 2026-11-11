@@ -38,6 +38,7 @@ class SubmissionState:
     recipient_id: str | None = None
     message_sha256: str | None = None
     message_chars: int | None = None
+    baseline_count: int | None = None
     state: str = "prepared"
     events: list[str] = field(default_factory=list)
     updated_at: str | None = None
@@ -54,7 +55,7 @@ def _replay(records: list[dict]) -> dict[str, SubmissionState]:
         current.events.append(event)
         current.state = event
         current.updated_at = record.get("ts")
-        for key in ("recipient_id", "message_sha256", "message_chars"):
+        for key in ("recipient_id", "message_sha256", "message_chars", "baseline_count"):
             if record.get(key) is not None:
                 setattr(current, key, record[key])
         states[op_id] = current
@@ -187,34 +188,44 @@ def digest_of(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def submission_evidence(driver, recipient_id: str | None, message_sha256: str | None) -> dict:
-    """Read the device back and look for the exact record bound to this op."""
-    try:
-        observed = driver.observe()
-    except Exception:
-        return {"matched": False, "unclear": True, "source": "observation_failed"}
-    if not isinstance(observed, dict) or not observed.get("ok"):
-        return {"matched": False, "unclear": True, "source": "observation_failed"}
-    messages = observed.get("messages")
-    if isinstance(messages, list):
-        for item in messages:
-            if not isinstance(item, dict):
-                continue
-            text = item.get("text")
-            if (isinstance(text, str) and message_sha256
-                    and digest_of(text) == message_sha256):
-                return {"matched": True, "unclear": False, "source": "driver_messages"}
-        return {"matched": False, "unclear": False, "source": "driver_messages"}
-    hierarchy = observed.get("hierarchy_path")
-    if hierarchy:
-        try:
-            text = Path(hierarchy).read_text(encoding="utf-8")
-        except (OSError, TypeError, ValueError):
-            return {"matched": False, "unclear": True, "source": "hierarchy_unavailable"}
-        if "chat.message.0" in text:
-            # A hierarchy confirms a record exists but cannot bind it to a digest.
-            return {"matched": True, "unclear": True, "source": "hierarchy"}
-    return {"matched": False, "unclear": True, "source": "no_record_evidence"}
+def record_count_for(driver, recipient_id: str | None) -> int | None:
+    """Records belonging to exactly one target, or None when unattributable.
+
+    Device drivers expose a UI hierarchy rather than per-recipient records,
+    so they must never claim an attributed record count.
+    """
+    if not recipient_id:
+        return None
+    messages = getattr(driver, "messages", None)
+    if not isinstance(messages, dict):
+        return None
+    records = messages.get(recipient_id)
+    return len(records) if isinstance(records, list) else None
+
+
+def submission_evidence(driver, recipient_id, message_sha256, baseline_count) -> dict:
+    """Confirm only a NEW record belonging to this operation's recipient.
+
+    A digest match against an arbitrary or historical record is not evidence.
+    Without a baseline and per-recipient records the outcome stays unclear,
+    so recovery pauses instead of guessing.
+    """
+    if not recipient_id or baseline_count is None or not message_sha256:
+        return {"matched": False, "unclear": True, "source": "baseline_unavailable"}
+    current = record_count_for(driver, recipient_id)
+    if current is None:
+        return {"matched": False, "unclear": True, "source": "record_not_attributable"}
+    messages = getattr(driver, "messages", None)
+    records = messages[recipient_id]
+    if current <= baseline_count:
+        return {"matched": False, "unclear": False, "source": "no_new_record"}
+    for item in records[baseline_count:]:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and digest_of(text) == message_sha256:
+            return {"matched": True, "unclear": False, "source": "attributed_new_record"}
+    return {"matched": False, "unclear": False, "source": "new_record_digest_mismatch"}
 
 
 class SubmissionGate:
@@ -224,10 +235,13 @@ class SubmissionGate:
         self.bridge = bridge
         self.ledger = ledger or MemoryLedger()
 
-    @staticmethod
-    def _fields(p) -> dict:
-        return {"op_id": p.id, "recipient_id": p.recipient_id,
-                "message_sha256": digest_of(p.message), "message_chars": len(p.message)}
+    def _fields(self, p) -> dict:
+        fields = {"op_id": p.id, "recipient_id": p.recipient_id,
+                  "message_sha256": digest_of(p.message), "message_chars": len(p.message)}
+        baseline = record_count_for(self.bridge.driver, p.recipient_id)
+        if baseline is not None:
+            fields["baseline_count"] = baseline
+        return fields
 
     def execute(self, op_id: str, *, hooks: dict | None = None) -> dict:
         """Atomically consume the approval, mark dispatching, submit, then verify.
@@ -248,9 +262,13 @@ class SubmissionGate:
         fields = self._fields(p)
         with self.ledger.transaction() as txn:
             prior = txn.state(op_id)
-            if prior and prior.state in NON_REPLAYABLE:
+            # The ledger is the single source of truth. An in-memory approval
+            # without a durable approved event must never reach the device.
+            if not prior or "approved" not in prior.events:
+                return fail("approval_not_durable")
+            if prior.state in NON_REPLAYABLE:
                 return fail("submission_already_processed", state=prior.state)
-            if prior and prior.message_sha256 not in (None, fields["message_sha256"]):
+            if prior.message_sha256 not in (None, fields["message_sha256"]):
                 return fail("submission_digest_mismatch")
             txn.append("dispatching", **fields)
         p.consumed = True  # approval consumed before the device call
@@ -273,7 +291,8 @@ class SubmissionGate:
                     "ok": False, "submission_state": "unresolved", "pause": True,
                     "error": (result or {}).get("error", "submission_unverified")
                     if isinstance(result, dict) else "submission_unverified"}
-        evidence = submission_evidence(bridge.driver, p.recipient_id, fields["message_sha256"])
+        evidence = submission_evidence(bridge.driver, p.recipient_id,
+                                       fields["message_sha256"], fields.get("baseline_count"))
         if evidence["matched"] and not evidence["unclear"]:
             self.ledger.append("completed", **fields, detail=evidence["source"])
             return {**result, "submission_state": "completed", "verification": evidence,
@@ -296,7 +315,7 @@ class SubmissionGate:
                 if state.state not in RECOVERABLE:
                     continue
                 evidence = submission_evidence(self.bridge.driver, state.recipient_id,
-                                               state.message_sha256)
+                                               state.message_sha256, state.baseline_count)
                 confirmed = evidence["matched"] and not evidence["unclear"]
                 event = "completed" if confirmed else "unresolved"
                 detail = "recovered_confirmed_no_resend" if confirmed else "recovered_paused_no_resend"

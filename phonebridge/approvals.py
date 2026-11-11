@@ -46,9 +46,11 @@ class _UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 class ApprovalEndpoint:
     """Trusted-side approval channel.
 
-    ``required_uid`` and ``token`` are the isolation controls. A deployment
-    that intends to submit anything must set at least one; leaving both unset
-    is only acceptable for the Mock demo, and is disclosed in status.
+    ``token`` is the locally usable isolation control. ``required_uid`` only
+    works when the endpoint is hosted externally with extra OS ACLs: a
+    different UID cannot otherwise reach this service's 0700 directory and
+    0600 socket. Leaving both unset is only acceptable for the Mock demo,
+    and is disclosed in status.
     """
 
     def __init__(self, bridge: PhoneBridge, path: str, *, token: str | None = None,
@@ -63,21 +65,31 @@ class ApprovalEndpoint:
         self._socket_identity = None
 
     @property
+    def isolation_mode(self) -> str:
+        if self.token:
+            return "token"
+        if self.required_uid is not None:
+            return "external_uid_unverified"
+        return "demo"
+
+    @property
     def isolated(self) -> bool:
-        return bool(self.token) or self.required_uid is not None
+        return self.isolation_mode != "demo"
 
     def start(self):
         if self.required_uid is not None and self.required_uid == os.getuid():
             raise PermissionError(
                 "Approval isolation requires a UID different from the MCP service process.")
         # The service owns its private socket directory; the approver identity
-        # is enforced per connection instead of by directory ownership.
+        # is checked per connection. With required_uid this needs an externally
+        # hosted endpoint and OS ACLs, so it is not counted as isolation.
         target = private_path(self.path)
         if os.path.lexists(target):
             raise FileExistsError(f"approval socket already exists: {target}")
         bridge = self.bridge
         token, required_uid, peer_uid_fn = self.token, self.required_uid, self.peer_uid_fn
-        bridge.approval_isolated = self.isolated
+        bridge.approval_isolated = (self.isolation_mode == "token")
+        bridge.approval_isolation_mode = self.isolation_mode
 
         class Handler(socketserver.StreamRequestHandler):
             timeout = 3

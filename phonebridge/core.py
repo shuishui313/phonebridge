@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .drivers import MESSAGING_APP, MockIPhone, fail
-from .submissions import SubmissionGate, digest_of
+from .submissions import SubmissionGate, digest_of, record_count_for
 
 
 def normalized_coordinates(*coordinates):
@@ -54,6 +54,7 @@ class PhoneBridge:
         self.proposals: dict[str, Proposal] = {}
         self.audit_path = Path(audit_path) if audit_path else None
         self.approval_isolated = bool(approval_isolated)
+        self.approval_isolation_mode = "token" if approval_isolated else "demo"
         self.submission_hooks = submission_hooks
         # Single submission entry point. All durable state lives in the ledger,
         # which never stores the plaintext message body.
@@ -150,9 +151,12 @@ class PhoneBridge:
             self.proposals[op_id] = Proposal(op_id, canonical_id, recipient["name"], message,
                                              self.driver.revision, self.clock())
             digest = hashlib.sha256(message.encode()).hexdigest()
-            self.submissions.ledger.append(
-                "prepared", op_id=op_id, recipient_id=canonical_id,
-                message_sha256=digest, message_chars=len(message))
+            prepared = {"op_id": op_id, "recipient_id": canonical_id,
+                        "message_sha256": digest, "message_chars": len(message)}
+            baseline = record_count_for(self.driver, canonical_id)
+            if baseline is not None:
+                prepared["baseline_count"] = baseline
+            self.submissions.ledger.append("prepared", **prepared)
             return self._audit("prepare_message", {"ok": True, "approval_id": op_id,
                 "recipient_name": recipient["name"], "recipient_id": canonical_id,
                 "message_length": len(message), "message_sha256": digest,
@@ -180,9 +184,15 @@ class PhoneBridge:
                 return fail("unknown_or_processed_approval")
             if not self._is_current(p):
                 return fail("stale_or_expired_proposal")
+            # Persist first: a failed ledger write must not leave an in-memory
+            # approval that the submission gate would accept.
+            try:
+                self.submissions.ledger.append(
+                    "approved", op_id=op_id, recipient_id=p.recipient_id,
+                    message_sha256=digest_of(p.message))
+            except OSError:
+                return fail("approval_not_durable")
             p.approved = True
-            self.submissions.ledger.append("approved", op_id=op_id,
-                                           message_sha256=digest_of(p.message))
             return self._audit("approve", {"ok": True, "approved": True}, recipient_id=p.recipient_id)
 
     def deny(self, op_id: str):
@@ -190,8 +200,12 @@ class PhoneBridge:
             p = self.proposals.get(op_id)
             if not p or p.consumed or p.denied:
                 return fail("unknown_or_processed_approval")
+            try:
+                self.submissions.ledger.append("denied", op_id=op_id,
+                                               recipient_id=p.recipient_id)
+            except OSError:
+                return fail("decision_not_durable")
             p.denied = True
-            self.submissions.ledger.append("denied", op_id=op_id)
             return self._audit("deny", {"ok": True, "denied": True}, recipient_id=p.recipient_id)
 
     def execute(self, op_id: str):
@@ -205,7 +219,8 @@ class PhoneBridge:
 
     def submission_summary(self) -> dict:
         return {**self.submissions.ledger.summary(),
-                "approval_isolated": self.approval_isolated}
+                "approval_isolated": self.approval_isolated,
+                "approval_isolation_mode": self.approval_isolation_mode}
 
     def recover_submissions(self) -> dict:
         """Trusted-side startup step; never exposed as an MCP tool."""
