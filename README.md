@@ -103,7 +103,15 @@ python3 -m phonebridge.cli --approval-socket "$PB_DIR/approval.sock" \
 
 `scripts/hosted-approval-spike.py` 可复跑 13 项判据并输出 `hosted_acl_verified`。**真实以另一个 UID 运行审批 CLI 需要现场授权**；脚本用注入的对端凭据函数验证判定逻辑，`cross_uid_process_verified` 恒为 `false`，不冒充跨账号进程验收。具名 ACL 目前只在 macOS 实现，其他平台返回不支持并拒绝启动。[安全边界](docs/security.md) · [测试报告](docs/test-report.md)
 
-现场真实进程验收入口是 `scripts/cross-uid-approval-spike.py`：在具名 ACL 之上，以真实的另一个 UID 运行审批客户端并核对 OS 对端凭据，令牌从具名可读文件加载、不进子命令。本机非交互式 `sudo` 需要密码，脚本会如实输出 `outcome: blocked` 与现场复跑命令，**不索取密码、不绕过提权，也不把替身彩排记为真实进程验收**。
+现场真实进程验收入口是 `scripts/cross-uid-approval-spike.py`：在具名 ACL 之上，以真实的另一个 UID 运行审批客户端并核对 OS 对端凭据，令牌从具名可读文件加载、不进子命令。**脚本本体不要用 `sudo` 跑**（那会让 MCP 服务以 root 运行，不等于两个非特权账号分离）；只需先缓存凭据，再以普通用户运行：
+
+```sh
+cd /path/to/phonebridge
+sudo -v
+python3 scripts/cross-uid-approval-spike.py --approver nobody
+```
+
+脚本内部的 `sudo -n -u nobody` 会复用缓存凭据。本机非交互式 `sudo` 需要密码，脚本会如实输出 `outcome: blocked` 与带仓库绝对路径的现场命令；检测到以 root 运行时也直接拒绝并给出同一命令。**不索取密码、不绕过提权，也不把替身彩排记为真实进程验收**。
 
 真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截。`scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>` 则跑 G2 完整可写验收（36 项判据：未审批拒绝、目标／正文／上下文变更、批准后恰好一条可归属记录、重放、重启不重发），运行后把夹具恢复为 `pb-disable-submit` 基线。两个脚本都只作用于自有合成夹具，**真实消息发送始终禁用**。 [测试报告](docs/test-report.md) · [实现计划](docs/implementation-plan.md)
 

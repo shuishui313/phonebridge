@@ -7,6 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -48,6 +49,8 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertFalse(payload["cross_uid_process_verified"])
         self.assertEqual(payload["blocker"], "sudo_non_interactive_unavailable")
         self.assertIn("cross-uid-approval-spike.py", payload["on_site_command"])
+        self.assertIn("sudo -v &&", payload["on_site_command"])
+        self.assertIn(str(ROOT), payload["on_site_command"])
         self.assertEqual(payload["check_count"], 0)
 
     def test_child_command_never_carries_the_token(self):
@@ -97,6 +100,18 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertFalse(payload["approver_process_real"])
         self.assertGreaterEqual(payload["check_count"], 10)
         self.assertEqual([k for k, v in payload["checks"].items() if not v], [], payload)
+
+    def test_root_execution_is_refused_with_the_exact_on_site_command(self):
+        with mock.patch.object(spike.os, "geteuid", return_value=0), \
+             mock.patch.object(spike, "probe_sudo",
+                               return_value={"ok": True, "reported_uid": "0"}):
+            code, payload = capture([], runner=None)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["outcome"], "blocked")
+        self.assertEqual(payload["blocker"], "script_must_not_run_as_root")
+        self.assertFalse(payload["cross_uid_process_verified"])
+        self.assertIn("sudo -v &&", payload["on_site_command"])
+        self.assertIn(str(ROOT), payload["on_site_command"])
 
 
 if __name__ == "__main__":

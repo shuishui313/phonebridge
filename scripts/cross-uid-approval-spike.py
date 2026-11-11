@@ -103,7 +103,7 @@ def blocker_evidence(approver: str, probe: dict) -> dict:
             "blocker": probe.get("error"),
             "blocker_detail": probe.get("detail"),
             "on_site_command": (
-                "After sudo credentials are available, run: "
+                f"cd {ROOT} && sudo -v && "
                 f"python3 scripts/cross-uid-approval-spike.py --approver {approver}"),
             "checks": {}, "check_count": 0,
             "note": ("Real named ACLs were verified separately by "
@@ -124,6 +124,21 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
     if args.probe_only:
         print(json.dumps({"sudo_non_interactive_available": probe["ok"],
                           "approver": args.approver, **probe}, ensure_ascii=False, indent=2))
+        return 0
+    if runner is None and os.geteuid() == 0:
+        print(json.dumps({
+            "outcome": "blocked",
+            "cross_uid_process_verified": False,
+            "blocker": "script_must_not_run_as_root",
+            "detail": ("Launching the whole spike with sudo makes the MCP service "
+                       "run as root, which is not the intended two-unprivileged-account "
+                       "acceptance condition. Only the inner sudo -n -u <approver> "
+                       "needs credentials."),
+            "on_site_command": (
+                f"cd {ROOT} && sudo -v && "
+                f"python3 scripts/cross-uid-approval-spike.py --approver {args.approver}"),
+            "checks": {}, "check_count": 0,
+        }, ensure_ascii=False, indent=2))
         return 0
     if not probe["ok"]:
         print(json.dumps(blocker_evidence(args.approver, probe), ensure_ascii=False, indent=2))
