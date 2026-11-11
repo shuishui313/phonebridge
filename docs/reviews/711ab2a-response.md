@@ -24,6 +24,7 @@
 ## 验收记录补充
 
 - G1 拆为两项：**自动化脚本等价工具序列通过**（`g1_passed: true`，本轮重跑仍通过）；**隔离 Codex 会话的自然语言拟稿复核待办**（仍未做）。
-- 评审反例全部使用本地合成数据与替身。真实跨账号审批验收、真机、真实第三方 App、Hark 完整联调仍未验证。
+- 评审反例全部使用本地合成数据与替身。当时真实跨账号审批验收、真机、真实第三方 App、Hark 完整联调仍未验证。
+- **同日后续更新（P1-4 闭环）**：`scripts/cross-uid-approval-spike.py --authenticate` 已在 macOS 本机以真实的第二 UID 进程完成现场验收，`outcome: "passed"`、`cross_uid_process_verified: true`、`approver_process_real: true`，15 项判据全过，P1-4 所缺的真实跨账号验收补齐；证据与边界见 [测试报告](../test-report.md)。这不改变本回复上表的降级结论（token 仍是默认隔离、单独 `--approval-uid` 仍不被记为已隔离），也不等于真机、独立审批设备、真实第三方 App 或 Hark 完整联调已验证。
 - 本轮新增 `scripts/xcode-mcp-submit-guard-spike.py`，运行后会把夹具恢复为 `pb-disable-submit`，不影响 G1 基线。
 - **同日后续更新**：决策 2 保持不变（真实驱动恢复仍一律暂停人工核验），但决策 1 中的「G2 阻塞项」随后已于 2026-11-11 当天解除——真实驱动的完整可写验收在 Apple Simulator 上以 36 项判据通过，见 [测试报告](../test-report.md)。方式为给真实驱动补齐可归属的合成上下文与受控虚拟提交（仅在自有夹具内、需操作者显式开关 + 完整审批隔离、产生的是合成记录而非真实消息），并非放宽决策 2 的归属标准。Hark 完整联调仍是 G2 剩余阻塞项。

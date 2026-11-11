@@ -205,7 +205,7 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 | 可复跑证据 | `scripts/hosted-approval-spike.py` **13 项判据全过、`hosted_passed: true`**，含真实 ACL 条目、布局、隔离升级、命名审批者批准、错误 UID／令牌拒绝、重放拒绝与非 hosted 对照。`cross_uid_process_verified: false`。 |
 | 回归 | `tests/test_hosted_approvals.py` 10 项；Python 全套 **203 项**、v0.2 归档 **10 项**通过；lints 与 `git diff --check` 干净。 |
 
-**边界声明**：ACL 授权与 `ls -lde` 核验是真实 OS 操作，但证据里的审批对端 UID 由注入的 `peer_uid_fn` 模拟；以真实的另一个 UID 运行审批 CLI 需要现场授权，本轮未做，故「真实跨账号审批验收」仍为待办。具名 ACL 只在 macOS 实现，其他平台返回 `acl_platform_unsupported` 并拒绝启动。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
+**边界声明（当时状态）**：ACL 授权与 `ls -lde` 核验是真实 OS 操作，但证据里的审批对端 UID 由注入的 `peer_uid_fn` 模拟；以真实的另一个 UID 运行审批 CLI 需要现场授权，本轮未做，故「真实跨账号审批验收」仍为待办。具名 ACL 只在 macOS 实现，其他平台返回 `acl_platform_unsupported` 并拒绝启动。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。该待办已于同日稍后的现场验收解除，见下文「真实跨 UID 进程现场验收通过」一节。
 
 ## 2026-11-11 追加 · 真实跨 UID 审批验收入口与本机阻碍
 
@@ -224,7 +224,26 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **已知问题**：`tests/test_hark_spike.py` 的 SSH 回环链路测试仍存在偶发连接竞态（临时 sshd 已就绪但个别阶段连接异常，曾导致 `failure` / `reconnect` 证据为 false）；本轮多轮全套回归中偶有一轮失败、重跑通过，与新增改动无关，继续保留记录待单独加固。审批端点此前的 EPIPE 竞态已在本轮修复，连续三轮全套 212 项均通过。
 
-**边界声明**：真实跨 UID 进程验收仍未完成，需要操作者在有 sudo 凭据的终端执行现场命令；脚本不索取密码、不做提权绕过。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。
+**边界声明（当时状态）**：真实跨 UID 进程验收仍未完成，需要操作者在有 sudo 凭据的终端执行现场命令；脚本不索取密码、不做提权绕过。真实 Codex 模型编排、Hark 客户端端到端、真实 App Intents／快捷指令、真机与真实第三方 App 仍未验证。该阻碍已于同日稍后的现场验收解除，见下一节。
+
+## 2026-11-11 追加 · 真实跨 UID 进程现场验收通过
+
+操作者在新开的终端里以普通用户执行 `cd <repo> && python3 scripts/cross-uid-approval-spike.py --approver <approver> --authenticate`，密码由 `sudo` 直接向终端提示一次。回传结果为 `outcome: "passed"`、`cross_uid_process_verified: true`、`check_count: 15`，15 项判据全部为 `true`。`approver_process_real: true` 表示审批客户端确实是另一个 UID 下的真实进程，不是注入的替身；`real_model_calls: false` 表示没有真实模型调用；`authenticate_mode: true` 表示使用一次交互认证的常驻代理。
+
+| 验证项 | 现场结果 |
+| --- | --- |
+| 路径与 ACL 前置 | `token_file_acl_verified`、`shared_parent_traversable_by_other`、`shared_child_path_readable_by_other`、`shared_package_path_readable_by_other` 全过，说明公共 `/tmp` 共享目录与具名可读令牌文件对第二 UID 可达。 |
+| 端点隔离 | `approver_process_available`、`directory_acl_entry_verified`、`socket_acl_entry_verified`、`layout_still_private`、`hosted_isolation_disclosed` 全过，说明目录与套接字 ACL 条目可核验、0700/0600 布局未放宽、隔离披露为 `token+external_uid`。 |
+| 令牌与进程边界 | `token_not_in_child_command` 全过，令牌只从具名可读文件加载，不进入子命令或环境。 |
+| 真实对端批准 | `real_peer_uid_accepted` 全过，另一 UID 进程的批准请求返回 `ok: true` / `approved: true`；`one_attributed_record` 全过，执行后恰好一条可归属的合成记录。 |
+| 反例 | `cross_uid_replay_rejected` 全过（重放返回 `ok: false` / `unknown_or_processed_approval`）；`missing_token_rejected_by_real_peer` 全过（真实第二 UID 进程缺令牌被拒）；`service_uid_rejected_as_peer` 全过（服务账号自身 UID 被拒）。 |
+| 判据完整性 | `check_count` 15 与 `checks` 键集合一致，无缺项、无附加项、无假值；审批 UID 与服务账号 UID 不同。 |
+
+新增 `scripts/cross-uid-approval-spike.py --verify-evidence <PATH>`（`-` 表示标准输入）：把保存的现场 JSON 交给 `verify_evidence()` 做结构复核，不启动任何进程。它检查 15 项判据清单与现场脚本的 `checks` 键集合一致、全部为真、`outcome`／`cross_uid_process_verified`／`approver_process_real`／`real_model_calls` 自洽、两个 UID 不同、批准与重放响应符合预期、现场命令包含脚本名；彩排证据因 `approver_process_real: false` 被拒，篡改任一判据、增删判据、改动计数或响应均被拒。`tests/test_cross_uid_spike.py` 增至 15 项，其中 7 项覆盖该复核入口，并把彩排产出的判据集合与 `REQUIRED_CHECKS` 绑定以防清单漂移。对现场回传结果复核输出 `evidence_verified: true`、`reasons: []`、`check_count: 15`。
+
+**边界声明**：原始现场输出含本机 UID 与仓库绝对路径，按提交约定不入库，本节只登记匿名化的结构化结论；`--verify-evidence` 仅做结构一致性复核，不重新执行验收，也不能证明文件来源，来源归属仍由操作者的现场运行决定。验收范围限于 macOS 本机两个非特权账号之间的外部托管审批端点与具名 ACL，不等于真机、真实第三方 App、独立审批设备、Hark 客户端端到端、真实模型工具编排或真实 App Intents／快捷指令；真实消息发送仍禁用，G2 仍不整体通过（剩余阻塞项为 Hark 客户端端到端与真实 Codex 模型工具编排）。具名 ACL 仍只在 macOS 实现。此前各章节中的「真实跨账号审批验收未完成／未验证」均为对应时点的状态快照，最新状态以本节与 [HANDOFF](../HANDOFF.md) 下一阶段为准。
+
+**回归**：Python 全套 **219 项**、v0.2 归档 **10 项**通过；`git diff --check` 干净。全套首轮曾出现 1 项失败，随后连续三轮 219 项全过、单独复跑 `tests/test_hark_spike.py` 2 项也通过，符合已知的 `tests/test_hark_spike.py` SSH 回环连接竞态（临时 sshd 已就绪但个别阶段连接异常），与本次改动无关；该偶发失败不记为通过，继续保留记录待单独加固。
 
 ## 重跑自动测试
 
@@ -235,6 +254,9 @@ python3 -m unittest discover -s tests -v
 python3 -m unittest discover -s tests -p 'test_subprocess.py' -v
 python3 -m unittest discover -s legacy/v0.2 -v
 python3 legacy/v0.2/demo.py
+
+# 只读复核已保存的现场跨 UID 验收 JSON（不启动进程、不重新验收）
+python3 scripts/cross-uid-approval-spike.py --verify-evidence /path/to/on-site-result.json
 
 python3 -m venv .venv
 .venv/bin/python -m pip install .

@@ -12,6 +12,10 @@ Two launch modes:
 
 When neither path is available the script reports ``outcome=blocked``; it never
 reports an injected peer-credential result as a real cross-UID process.
+
+``--verify-evidence`` re-checks a recorded JSON result without re-running the
+acceptance. It only validates internal consistency of the evidence; seeing the
+real process on this host is still the operator's on-site step.
 """
 from __future__ import annotations
 
@@ -235,6 +239,85 @@ def path_readable_by_other(path: Path) -> bool:
     return True
 
 
+NOTE = ("Structural re-check only. The JSON must come from the operator's "
+        "on-site --authenticate run; this function never launches a process.")
+
+REQUIRED_CHECKS = (
+    "token_file_acl_verified",
+    "shared_parent_traversable_by_other",
+    "shared_child_path_readable_by_other",
+    "shared_package_path_readable_by_other",
+    "approver_process_available",
+    "directory_acl_entry_verified",
+    "socket_acl_entry_verified",
+    "layout_still_private",
+    "hosted_isolation_disclosed",
+    "token_not_in_child_command",
+    "real_peer_uid_accepted",
+    "one_attributed_record",
+    "cross_uid_replay_rejected",
+    "missing_token_rejected_by_real_peer",
+    "service_uid_rejected_as_peer",
+)
+
+
+def verify_evidence(payload: object) -> dict:
+    """Re-check a recorded on-site JSON result without re-running the spike.
+
+    This is a structural consistency check only; it cannot prove where the
+    JSON came from. Rehearsals are rejected because they carry
+    ``approver_process_real: false`` and ``cross_uid_process_verified: false``.
+    """
+    reasons: list[str] = []
+    if not isinstance(payload, dict):
+        return {"evidence_verified": False, "reasons": ["evidence_not_object"],
+                "failed_checks": [], "unexpected_checks": [],
+                "required_check_count": len(REQUIRED_CHECKS),
+                "note": NOTE}
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        reasons.append("checks_missing")
+        checks = {}
+    failed = sorted(name for name in REQUIRED_CHECKS if checks.get(name) is not True)
+    unexpected = sorted(set(checks) - set(REQUIRED_CHECKS))
+    if failed:
+        reasons.append("checks_not_all_true")
+    if unexpected:
+        reasons.append("unexpected_checks")
+    if payload.get("check_count") != len(REQUIRED_CHECKS) or len(checks) != len(REQUIRED_CHECKS):
+        reasons.append("check_count_mismatch")
+    if payload.get("outcome") != "passed":
+        reasons.append("outcome_not_passed")
+    if payload.get("cross_uid_process_verified") is not True:
+        reasons.append("cross_uid_process_not_verified")
+    if payload.get("approver_process_real") is not True:
+        reasons.append("approver_process_not_real")
+    if payload.get("real_model_calls") is not False:
+        reasons.append("model_calls_not_excluded")
+    approver_uid, service_uid = payload.get("approver_uid"), payload.get("service_uid")
+    if not (isinstance(approver_uid, int) and isinstance(service_uid, int)
+            and approver_uid != service_uid and approver_uid >= 0 and service_uid >= 0):
+        reasons.append("uids_not_distinct")
+    approved = payload.get("approver_approve_response")
+    if not isinstance(approved, dict) or not (
+            approved.get("approved") is True or approved.get("ok") is True):
+        reasons.append("approve_response_not_approved")
+    replay = payload.get("approver_replay_response")
+    if not isinstance(replay, dict) or replay.get("ok") is not False or not replay.get("error"):
+        reasons.append("replay_not_rejected")
+    command = payload.get("on_site_command")
+    if not isinstance(command, str) or "cross-uid-approval-spike.py" not in command:
+        reasons.append("on_site_command_missing")
+    return {"evidence_verified": not reasons,
+            "reasons": reasons,
+            "failed_checks": failed,
+            "unexpected_checks": unexpected,
+            "check_count": payload.get("check_count"),
+            "required_check_count": len(REQUIRED_CHECKS),
+            "authenticate_mode": payload.get("authenticate_mode"),
+            "note": NOTE}
+
+
 def on_site_command(approver: str) -> str:
     return (f"cd {ROOT} && python3 scripts/cross-uid-approval-spike.py "
             f"--approver {approver} --authenticate")
@@ -264,8 +347,23 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
     parser.add_argument("--probe-only", action="store_true", help="Only check non-interactive sudo")
     parser.add_argument("--authenticate", action="store_true",
                         help="Launch one interactive sudo agent; may prompt once for a password")
+    parser.add_argument("--verify-evidence", metavar="PATH",
+                        help="Re-check a saved on-site JSON result; use - for stdin")
     args = parser.parse_args(argv)
 
+    if args.verify_evidence:
+        try:
+            raw = (sys.stdin.read() if args.verify_evidence == "-"
+                   else Path(args.verify_evidence).read_text(encoding="utf-8"))
+            payload = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"evidence_verified": False,
+                              "reasons": [f"unreadable_evidence: {type(exc).__name__}"]},
+                             ensure_ascii=False, indent=2))
+            return 1
+        verdict = verify_evidence(payload)
+        print(json.dumps(verdict, ensure_ascii=False, indent=2))
+        return 0 if verdict["evidence_verified"] else 1
     if args.probe_only:
         probe = probe_sudo(args.approver, runner=runner)
         print(json.dumps({"sudo_non_interactive_available": probe["ok"],

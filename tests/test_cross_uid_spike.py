@@ -101,6 +101,7 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertFalse(payload["approver_process_real"])
         self.assertGreaterEqual(payload["check_count"], 10)
         self.assertEqual([k for k, v in payload["checks"].items() if not v], [], payload)
+        self.assertEqual(set(payload["checks"]), set(spike.REQUIRED_CHECKS))
 
     def test_root_execution_is_refused_with_the_exact_on_site_command(self):
         with mock.patch.object(spike.os, "geteuid", return_value=0), \
@@ -145,6 +146,125 @@ class CrossUIDSpikeTests(unittest.TestCase):
             hidden.write_text("pass", encoding="utf-8")
             hidden.chmod(0o755)
             self.assertFalse(spike.path_readable_by_other(hidden))
+
+def sample_evidence(**changes):
+    """Synthetic on-site result; no real UIDs, tokens, paths or messages."""
+    payload = {
+        "approver": "approver-account",
+        "approver_uid": 2002,
+        "service_uid": 2001,
+        "authenticate_mode": True,
+        "approver_process_real": True,
+        "real_model_calls": False,
+        "approver_approve_response": {"ok": True, "approved": True},
+        "approver_replay_response": {"ok": False, "error": "unknown_or_processed_approval"},
+        "checks": {name: True for name in spike.REQUIRED_CHECKS},
+        "check_count": len(spike.REQUIRED_CHECKS),
+        "outcome": "passed",
+        "cross_uid_process_verified": True,
+        "on_site_command": ("cd <repo> && python3 scripts/cross-uid-approval-spike.py "
+                            "--approver approver-account --authenticate"),
+    }
+    payload.update(changes)
+    return payload
+
+
+class EvidenceVerificationTests(unittest.TestCase):
+    def test_real_process_evidence_is_accepted(self):
+        verdict = spike.verify_evidence(sample_evidence())
+        self.assertTrue(verdict["evidence_verified"], verdict)
+        self.assertEqual(verdict["reasons"], [])
+        self.assertEqual(verdict["failed_checks"], [])
+        self.assertEqual(verdict["required_check_count"], 15)
+        self.assertEqual(verdict["check_count"], 15)
+
+    def test_rehearsal_evidence_is_rejected(self):
+        verdict = spike.verify_evidence(sample_evidence(
+            approver_process_real=False, cross_uid_process_verified=False))
+        self.assertFalse(verdict["evidence_verified"])
+        self.assertIn("approver_process_not_real", verdict["reasons"])
+        self.assertIn("cross_uid_process_not_verified", verdict["reasons"])
+
+    def test_missing_false_or_unknown_checks_are_rejected(self):
+        checks = {name: True for name in spike.REQUIRED_CHECKS}
+        checks["one_attributed_record"] = False
+        verdict = spike.verify_evidence(sample_evidence(checks=checks))
+        self.assertFalse(verdict["evidence_verified"])
+        self.assertEqual(verdict["failed_checks"], ["one_attributed_record"])
+
+        incomplete = {name: True for name in spike.REQUIRED_CHECKS}
+        del incomplete["service_uid_rejected_as_peer"]
+        verdict = spike.verify_evidence(sample_evidence(checks=incomplete, check_count=14))
+        self.assertFalse(verdict["evidence_verified"])
+        self.assertIn("checks_not_all_true", verdict["reasons"])
+        self.assertIn("check_count_mismatch", verdict["reasons"])
+
+        extra = {**{name: True for name in spike.REQUIRED_CHECKS}, "invented_check": True}
+        verdict = spike.verify_evidence(sample_evidence(checks=extra, check_count=16))
+        self.assertFalse(verdict["evidence_verified"])
+        self.assertEqual(verdict["unexpected_checks"], ["invented_check"])
+
+    def test_inconsistent_identity_and_responses_are_rejected(self):
+        changes = [
+            ({"approver_uid": 2001}, "uids_not_distinct"),
+            ({"real_model_calls": True}, "model_calls_not_excluded"),
+            ({"outcome": "blocked"}, "outcome_not_passed"),
+            ({"approver_approve_response": {"ok": False}}, "approve_response_not_approved"),
+            ({"approver_replay_response": {"ok": True}}, "replay_not_rejected"),
+            ({"on_site_command": "python3 -c pass"}, "on_site_command_missing"),
+            ({"check_count": 14}, "check_count_mismatch"),
+        ]
+        for change, reason in changes:
+            with self.subTest(reason=reason):
+                verdict = spike.verify_evidence(sample_evidence(**change))
+                self.assertFalse(verdict["evidence_verified"])
+                self.assertIn(reason, verdict["reasons"])
+
+    def test_non_object_evidence_is_rejected(self):
+        for payload in ([], None, "passed", 15):
+            with self.subTest(payload=payload):
+                self.assertFalse(spike.verify_evidence(payload)["evidence_verified"])
+
+    def test_cli_reads_saved_result_from_stdin_and_file(self):
+        with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(sample_evidence()))):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = spike.main(["--verify-evidence", "-"], runner=None)
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out.getvalue())["evidence_verified"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "result.json"
+            path.write_text(json.dumps(sample_evidence()), encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = spike.main(["--verify-evidence", str(path)], runner=None)
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(out.getvalue())["evidence_verified"])
+
+    def test_cli_rejects_bad_json_and_tampered_evidence(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = spike.main(["--verify-evidence", "/definitely/missing/result.json"], runner=None)
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(out.getvalue())["evidence_verified"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "result.json"
+            path.write_text(json.dumps(sample_evidence(cross_uid_process_verified=False)),
+                            encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = spike.main(["--verify-evidence", str(path)], runner=None)
+            self.assertEqual(code, 1)
+            self.assertFalse(json.loads(out.getvalue())["evidence_verified"])
+
+        with mock.patch.object(sys, "stdin", io.StringIO("not json")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = spike.main(["--verify-evidence", "-"], runner=None)
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(out.getvalue())["evidence_verified"])
 
 
 if __name__ == "__main__":

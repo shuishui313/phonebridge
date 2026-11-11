@@ -101,7 +101,7 @@ python3 -m phonebridge.cli --approval-socket "$PB_DIR/approval.sock" \
   --token-env PB_HARK_TOKEN approvals list
 ```
 
-`scripts/hosted-approval-spike.py` 可复跑 13 项判据并输出 `hosted_acl_verified`。**真实以另一个 UID 运行审批 CLI 需要现场授权**；脚本用注入的对端凭据函数验证判定逻辑，`cross_uid_process_verified` 恒为 `false`，不冒充跨账号进程验收。具名 ACL 目前只在 macOS 实现，其他平台返回不支持并拒绝启动。[安全边界](docs/security.md) · [测试报告](docs/test-report.md)
+`scripts/hosted-approval-spike.py` 可复跑 13 项判据并输出 `hosted_acl_verified`。该脚本用注入的对端凭据函数验证判定逻辑，自身的 `cross_uid_process_verified` 恒为 `false`，不冒充跨账号进程验收；真实进程验收已由下述 `scripts/cross-uid-approval-spike.py` 单独完成。具名 ACL 目前只在 macOS 实现，其他平台返回不支持并拒绝启动。[安全边界](docs/security.md) · [测试报告](docs/test-report.md)
 
 现场真实进程验收入口是 `scripts/cross-uid-approval-spike.py`：在具名 ACL 之上，以真实的另一个 UID 运行审批客户端并核对 OS 对端凭据，令牌从具名可读文件加载、不进子命令。**脚本本体不要用 `sudo` 跑**（那会让 MCP 服务以 root 运行，不等于两个非特权账号分离）。推荐用一次交互认证的常驻代理模式，sudo 只会向终端提示一次密码：
 
@@ -111,6 +111,8 @@ python3 scripts/cross-uid-approval-spike.py --approver nobody --authenticate
 ```
 
 该模式启动一次 `sudo -u nobody` 代理，之后的批准／重放／缺令牌请求都走本地 socket，不依赖 sudo 票据在父子进程间共享；密码由 sudo 直接读取，脚本不读取、不存储、不转发。默认模式仍用 `sudo -n` 逐次调用，若非交互 sudo 不可用就如实输出 `outcome: blocked` 与上面的现场命令；检测到以 root 运行时也直接拒绝。**不绕过提权，也不把替身彩排记为真实进程验收**。
+
+**现场验收结果（2026-11-11）**：以 `--authenticate` 取得 `outcome: "passed"`、`cross_uid_process_verified: true`、`approver_process_real: true`、`real_model_calls: false`，15 项判据全过，覆盖令牌文件与共享路径 ACL、目录／套接字 ACL 条目、0700/0600 布局、`token+external_uid` 披露、令牌不进子命令、真实第二 UID 批准、恰好一条可归属记录，以及重放、缺令牌、服务账号自身 UID 三类反例。原始输出含本机 UID 与绝对路径，按提交约定不入库，仓库只登记匿名化结论，见 [测试报告](docs/test-report.md)。保存现场 JSON 后可用 `python3 scripts/cross-uid-approval-spike.py --verify-evidence <PATH>`（`-` 读标准输入）做只读结构复核：彩排结果、缺项、假值、计数不符或响应被篡改都会返回 `evidence_verified: false`。该复核不启动进程、不重新执行验收，也不能证明文件来源。**边界**：只覆盖 macOS 本机两个非特权账号之间的外部托管审批端点，不等于真机、真实第三方 App、独立审批设备、Hark 客户端端到端、真实模型编排或真实 App Intents；真实消息发送仍禁用。
 
 真实驱动在每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前返回 `submission_requires_approval`；`scripts/xcode-mcp-submit-guard-spike.py --sim-udid <UDID>` 可在常规启动（提交按钮启用）下复验该拦截。`scripts/xcode-mcp-g2-writable-spike.py --sim-udid <UDID>` 则跑 G2 完整可写验收（36 项判据：未审批拒绝、目标／正文／上下文变更、批准后恰好一条可归属记录、重放、重启不重发），运行后把夹具恢复为 `pb-disable-submit` 基线。两个脚本都只作用于自有合成夹具，**真实消息发送始终禁用**。 [测试报告](docs/test-report.md) · [实现计划](docs/implementation-plan.md)
 
