@@ -1,6 +1,6 @@
 # PhoneBridge 架构
 
-Agent 负责理解自然语言和规划操作。PhoneBridge 校验 MCP 请求，执行驱动允许的动作并返回状态，审批由用户在独立终端发出。Hark 经 SSH 接到运行 Agent 的主机，整个执行器可在该主机上工作。[Hark 接入](hark-codex.md)
+Agent 负责理解自然语言和规划操作。PhoneBridge 校验 MCP 请求，执行驱动允许的动作并返回状态，审批由用户在独立终端发出。Hark 经 SSH 接到运行 Agent 的主机，整个执行器可在该主机上工作；`serve` 是一次性 stdio 会话，`backend` 配合 `relay` 让多次 SSH／客户端连接共享同一份服务状态。[Hark 接入](hark-codex.md)
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,7 @@ flowchart TD
 
 | 位置 | 职责 |
 | --- | --- |
-| `phonebridge/cli.py` | 选择 `mock` 或 `simctl`，启动 MCP 会话和可选审批端点，或发出审批命令。 |
+| `phonebridge/cli.py` | 选择 `mock`、`simctl` 或 `xcode-mcp`，以 `serve`（stdio）或 `backend`（私有 Unix 套接字 + relay）启动 MCP 服务和可选审批端点，或发出审批命令。 |
 | `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果；作为薄壳调用稳定内部 API。 |
 | `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限；状态改变后按当次证据回读，结果不明即**持久暂停所有写动作**、只读放行，须由可信侧 `resume_after_readback()` 绑定成功回读才恢复。任务窗口重置、暂停解除与审批动作都不暴露给 Agent。 |
 | `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`approve` / `deny` 先持久化再改内存，`execute` 只委托唯一提交门。 |
@@ -29,7 +29,9 @@ flowchart TD
 | `phonebridge/approvals.py` | 本机 Unix 套接字处理提案查看、批准和拒绝；令牌为本地可用隔离，`--approval-uid` 的对端凭据校验仅适用于外部托管端点，`isolation_mode` 如实披露当前模式。 |
 | `phonebridge/drivers.py` | `MockIPhone` 模拟合成私信场景、联系人、输入焦点与记录。`AppleSimulatorDriver` 调用 `xcrun simctl` 读取选定设备状态、启动自有夹具及保存截图。 |
 | `phonebridge/xcode_mcp.py` | `XcodeMCPDriver` 通过 Apple 官方 `xcrun mcpbridge` 观察设备状态、激活夹具并按需合成交互；只用设备交互／诊断工具白名单，改变状态的操作需人工显式开启。每次交互前按新鲜层级定位启用的提交控件，通用点击／滑动命中即在派发交互命令前拒绝，无法定位即 fail closed；`record_count()` 从当次层级提供记录数。每次新鲜观察后从层级解析合成上下文（`app` / `screen` / `selected_id` / `input_text` / `contacts` / 仅当前联系人的 `messages`），使审批核心无需设备专用分支；`virtual_send` 只在操作者显式开启时由唯一提交门调用，绑定目标与正文并回读确认只新增一条合成记录，**不是真实发送**。 |
-| `simulator/`、`scripts/` | SwiftUI 测试 App（私信与信息流两个合成场景）、XCUITest、XcodeGen 工程描述与 Apple 测试脚本。 |
+| `phonebridge/relay.py` | 可重连传输：后端进程持有 `CoreAPI`、审批与台账状态，监听 0700 目录内的 0600 Unix 套接字；每次 stdio 连接新建一个 MCP 协议会话，客户端断开或重连不影响服务状态。 |
+| `phonebridge/hark.py` | 主机侧接入 helper：发现或指定 Codex 客户端、构造 inline MCP 配置与 SSH 包装、解析结构化事件，并从客户端环境中移除审批令牌。 |
+| `simulator/`、`scripts/` | SwiftUI 测试 App（私信与信息流两个合成场景）、XCUITest、XcodeGen 工程描述、Apple 测试脚本与主机侧联调脚本。 |
 
 ## 模拟发送顺序
 

@@ -11,6 +11,7 @@ from .approvals import ApprovalEndpoint, approval_request
 from .core import PhoneBridge
 from .drivers import AppleSimulatorDriver, MockIPhone
 from .mcp_v04 import MCPServer
+from .relay import serve_backend
 from .submissions import SubmissionLedger
 from .xcode_mcp import XcodeMCPDriver
 
@@ -47,6 +48,8 @@ def main(argv=None):
                         "record inside the owned Simulator fixture. Never a real message send.")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("serve")
+    backend = sub.add_parser("backend", help="Serve MCP on a private Unix socket for reconnecting clients")
+    backend.add_argument("--socket", required=True, help="Private Unix socket path in a 0700 directory")
     ap = sub.add_parser("approvals")
     ap.add_argument("action", choices=["list", "approve", "deny"])
     ap.add_argument("id", nargs="?")
@@ -107,12 +110,18 @@ def main(argv=None):
             print(json.dumps({"submission_recovery": recovery}, ensure_ascii=False), file=sys.stderr)
         api = CoreAPI(bridge, time_limit=args.task_timeout, action_budget=args.action_budget,
                       max_read_retries=args.max_read_retries, max_retries=args.max_retries)
+        def serve_api():
+            if args.command == "backend":
+                serve_backend(api, args.socket)
+            else:
+                MCPServer(api).serve()
+
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket, token=token,
                                   required_uid=args.approval_uid):
-                MCPServer(api).serve()
+                serve_api()
         else:
-            MCPServer(api).serve()
+            serve_api()
     except BrokenPipeError:
         return 1
     except (OSError, ValueError) as exc:

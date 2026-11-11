@@ -157,6 +157,23 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **边界声明**：这里产生的只是合成夹具内的一条合成记录，不是真实消息发送；没有打开真实第三方 App、没有连接真实设备、没有接外部审批设备。TTL 超时由单元测试用替身时钟验证，真机脚本用「屏幕变化导致 revision 失效」这一等价路径覆盖；Hark 经 SSH 的链路断线重连属于步骤 3，本轮的「重连」仅指 MCP 服务进程重启与台账恢复。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、真机与真实第三方 App 仍未验证。
 
+## 2026-11-11 追加 · 步骤 3 主机侧 Hark/SSH/Codex 链路证据
+
+步骤 3 拆成「主机侧链路」与「Hark 客户端端到端」两段。本轮完成前者的可复跑脚本与自动化回归，**不宣称 Hark 联调整体通过**。为避免真实模型调用带来的不确定性，自动化证据使用确定性客户端按 MCP JSON-RPC 直连私有套接字，输出与 `codex exec --json` 同构的事件；真实 Codex 模型的工具发现与自然语言编排仍是未通过项。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 可重连传输 | `phonebridge/relay.py` 的后端进程持有 `CoreAPI`、审批端点与提交台账，监听 0700 目录内的 0600 Unix 套接字；每次 stdio 连接由 `python3 -m phonebridge.relay stdio` 代理并重建 MCP 协议会话。CLI 新增 `backend --socket`，与 `serve` 共用同一套审批与台账参数。 |
+| 客户端与审批隔离 | `phonebridge/hark.py` 构造 inline MCP 配置与 SSH 包装；`codex_env()` 从客户端环境移除 `PB_HARK_TOKEN`，令牌只存在于后端与可信侧审批 CLI。每个阶段都校验「令牌不在客户端环境」「令牌不在命令行」。 |
+| 直连证据 | `scripts/hark-codex-spike.py` 在 Mock Driver 上跑拟稿 → 可信侧批准 → 执行 → 新连接回读 → 未批准执行 → 重放，**51 项布尔判据全过、`host_chain_passed: true`**，四类证据 `success` / `failure` / `interruption` / `reconnect` 全部 `verified: true`，共 9 次独立连接共享同一后端套接字。 |
+| 中断证据 | `--interruption-codex-path` 指定的客户端在发出 `phone_execute_operation` 后不读回执即关闭连接并退出。后端仍只提交一次；新连接回读该联系人恰好一条匹配记录，重放该操作 ID 被拒，`interruption_no_duplicate_record` 与 `interrupted_operation_replay_rejected` 均通过。 |
+| SSH 回环证据 | `scripts/hark-codex-ssh-loopback-spike.py` 在 127.0.0.1 起临时 key-only `sshd`（临时主机密钥、客户端密钥、`authorized_keys`、`known_hosts`，`BatchMode=yes`），以 `--transport ssh` 把每个阶段包装成独立 SSH 会话；`ssh_loopback_precheck: true`，完整链路同样 `host_chain_passed: true`。不修改系统 SSH 配置、不启用 Remote Login。 |
+| 台账与脱敏 | JSONL 事件计数为 `prepared ×3 / approved ×2 / dispatching ×2 / completed ×2`（未批准与被中断的提案各留下一条 `prepared`），原始台账不含任何一条合成正文。 |
+| 客户端边界 | 每个阶段只调用 `phonebridge` MCP 服务器，未出现 shell 执行或越权工具；`hark_client_verified: false`、`hark_ui_verified: false`。 |
+| 单元测试 | `tests/test_relay.py` 7 项（重连状态保持、stdio 代理、套接字权限、MCP 初始化与 `tools/list`、命令构造、SSH 包装、令牌隔离与事件解析）；`tests/test_hark_spike.py` 2 项分别跑直连与 SSH 回环完整链路。Python 全套 **182 项**、v0.2 归档 **10 项**通过；lints 与 `git diff --check` 干净。 |
+
+**边界声明**：证据中的客户端是确定性替身，不是真实模型调用；本机虽安装 Hark 客户端，但本轮未操作其 UI，也未验证真实 Hark SSH 会话。真实 Codex CLI 的 MCP 工具注入在本机多次尝试中不稳定（工具未注入或模型连接超时），因此**不列为通过项**，现场联调时须重新验收。G2 的 36 项真实驱动判据与本节证据互相独立：本节使用 Mock Driver，只验证传输、审批、中断与防重。真实跨账号审批验收、隔离 Codex 会话的自然语言拟稿复核（G1 第二项）、真机、真实第三方 App 与真实消息发送仍未验证。
+
 ## 重跑自动测试
 
 从仓库根目录运行。
