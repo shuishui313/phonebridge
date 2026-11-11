@@ -245,6 +245,20 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 **回归**：Python 全套 **219 项**、v0.2 归档 **10 项**通过；`git diff --check` 干净。全套首轮曾出现 1 项失败，随后连续三轮 219 项全过、单独复跑 `tests/test_hark_spike.py` 2 项也通过，符合已知的 `tests/test_hark_spike.py` SSH 回环连接竞态（临时 sshd 已就绪但个别阶段连接异常），与本次改动无关；该偶发失败不记为通过，继续保留记录待单独加固。
 
+## 2026-11-11 追加 · `ab853ca` 复审修复验证
+
+环境为 macOS 27.0.1、Python 3.10.10。仅使用合成数据。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `python3 -m unittest discover -s tests -v` | 230 项中 229 项通过，1 项失败，0 项跳过。通过项包含真实 stdio 与可信审批 CLI、跨两次后端启动的未决暂停、两个 relay 会话和确定性客户端直连。失败项为本机 SSH 回环的预检，临时 `sshd` 在预认证阶段报 `sandbox_init: Operation not permitted`，未进入 MCP 链路。 |
+| `python3 -m unittest discover -s legacy/v0.2 -v` | 10 项通过。 |
+| `python3 scripts/hosted-approval-spike.py` | 14 项通过，包含真实 macOS ACL 授予与关闭后撤销。审批客户端凭据用替身注入。 |
+| `python3 scripts/intent-channel-spike.py` | 13 项通过，合成路由与回读验证。 |
+| `git diff --check` | 通过。 |
+
+新版真实跨 UID 审批、Hark 客户端、真实 Codex 模型、Apple Simulator 和 XCUITest 本轮未重跑。上一版本的现场验收记录保留。真机、真实 App Intents、真实第三方 App 和实际消息发送仍未验证。代码修复与后续验收顺序见 [复审修复记录](reviews/ab853ca-response.md)。
+
 ## 重跑自动测试
 
 从仓库根目录运行。

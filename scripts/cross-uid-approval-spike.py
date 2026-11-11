@@ -39,6 +39,7 @@ from phonebridge.approvals import ApprovalEndpoint, approval_request
 from phonebridge.core import PhoneBridge
 from phonebridge.hosted import account_name, platform_supported, verify_acl, verify_layout
 from phonebridge.mcp import read_message, write_message
+from phonebridge.submissions import SubmissionLedger
 
 CHILD = r'''#!/usr/bin/env python3
 """Runs as the approver UID. Token comes from a file, never from argv."""
@@ -261,6 +262,16 @@ REQUIRED_CHECKS = (
 )
 
 
+def approval_confirmed(response: object) -> bool:
+    return (isinstance(response, dict) and response.get("ok") is True
+            and response.get("approved") is True)
+
+
+def approval_replay_rejected(response: object) -> bool:
+    return (isinstance(response, dict) and response.get("ok") is False
+            and response.get("error") == "unknown_or_processed_approval")
+
+
 def verify_evidence(payload: object) -> dict:
     """Re-check a recorded on-site JSON result without re-running the spike.
 
@@ -295,15 +306,12 @@ def verify_evidence(payload: object) -> dict:
     if payload.get("real_model_calls") is not False:
         reasons.append("model_calls_not_excluded")
     approver_uid, service_uid = payload.get("approver_uid"), payload.get("service_uid")
-    if not (isinstance(approver_uid, int) and isinstance(service_uid, int)
-            and approver_uid != service_uid and approver_uid >= 0 and service_uid >= 0):
-        reasons.append("uids_not_distinct")
-    approved = payload.get("approver_approve_response")
-    if not isinstance(approved, dict) or not (
-            approved.get("approved") is True or approved.get("ok") is True):
+    if not (type(approver_uid) is int and type(service_uid) is int
+            and approver_uid != service_uid and approver_uid > 0 and service_uid > 0):
+        reasons.append("uids_not_distinct_non_root")
+    if not approval_confirmed(payload.get("approver_approve_response")):
         reasons.append("approve_response_not_approved")
-    replay = payload.get("approver_replay_response")
-    if not isinstance(replay, dict) or replay.get("ok") is not False or not replay.get("error"):
+    if not approval_replay_rejected(payload.get("approver_replay_response")):
         reasons.append("replay_not_rejected")
     command = payload.get("on_site_command")
     if not isinstance(command, str) or "cross-uid-approval-spike.py" not in command:
@@ -382,6 +390,15 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         }, ensure_ascii=False, indent=2))
         return 0
 
+    import pwd
+    try:
+        approver_uid = pwd.getpwnam(args.approver).pw_uid
+    except KeyError:
+        parser.error("--approver must name an existing account")
+    service_uid = os.getuid()
+    if approver_uid == 0 or approver_uid == service_uid:
+        parser.error("--approver must name a non-root account different from the service account")
+
     use_session = bool(args.authenticate and runner is None)
     probe = ({"ok": True, "reported_uid": "interactive"} if use_session
              else probe_sudo(args.approver, runner=runner))
@@ -393,9 +410,6 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
                           "blocker": "acl_platform_unsupported"}, ensure_ascii=False, indent=2))
         return 0
 
-    import pwd
-    approver_uid = pwd.getpwnam(args.approver).pw_uid
-    service_uid = os.getuid()
     temp_parent = public_temp_parent()
     shared = Path(tempfile.mkdtemp(prefix="pb-crossuid-", dir=str(temp_parent)))
     endpoint = None
@@ -413,10 +427,11 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         subprocess.run(["chmod", "-R", "a+rX", str(shared / "phonebridge")],
                        check=True, timeout=20)
-        service_dir = shared / "service"
-        service_dir.mkdir(mode=0o700)
-        service_dir.chmod(0o700)
-        socket_path = service_dir / "approval.sock"
+        approval_dir = shared / "approval"
+        approval_dir.mkdir(mode=0o700)
+        socket_path = approval_dir / "approval.sock"
+        state_dir = shared / "state"
+        state_dir.mkdir(mode=0o700)
 
         token = secrets.token_urlsafe(24)
         token_file = shared / "token"
@@ -436,7 +451,8 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         checks["shared_package_path_readable_by_other"] = path_readable_by_other(
             shared / "phonebridge" / "core.py")
 
-        bridge = PhoneBridge()
+        ledger = SubmissionLedger(str(state_dir / "submissions.jsonl"))
+        bridge = PhoneBridge(ledger=ledger)
         endpoint = ApprovalEndpoint(bridge, str(socket_path), token=token,
                                     required_uid=int(approver_uid), hosted=True).start()
         bridge.open_app("messaging")
@@ -485,12 +501,12 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         checks["approver_process_available"] = bool(
             session is not None or probe["ok"])
         checks["directory_acl_entry_verified"] = bool(
-            verify_acl(service_dir, int(approver_uid))["ok"])
+            verify_acl(approval_dir, int(approver_uid))["ok"])
         checks["socket_acl_entry_verified"] = bool(
             verify_acl(socket_path, int(approver_uid))["ok"])
-        layout = verify_layout(service_dir, socket_path, service_uid=service_uid)
+        layout = verify_layout(approval_dir, socket_path, service_uid=service_uid)
         checks["layout_still_private"] = bool(
-            layout["ok"] and stat.S_IMODE(service_dir.lstat().st_mode) == 0o700
+            layout["ok"] and stat.S_IMODE(approval_dir.lstat().st_mode) == 0o700
             and stat.S_IMODE(socket_path.lstat().st_mode) == 0o600)
         checks["hosted_isolation_disclosed"] = (
             endpoint.isolation_mode == "token+external_uid")
@@ -499,15 +515,20 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         approved = call_approver("approve", op, True)
         if rehearsal_hook is not None:
             rehearsal_hook(bridge, "approve", op)
-        checks["real_peer_uid_accepted"] = bool(approved.get("approved") or approved.get("ok"))
+        checks["real_peer_uid_accepted"] = approval_confirmed(approved)
         evidence["approver_approve_response"] = approved
 
         executed = bridge.execute(op)
-        checks["one_attributed_record"] = bool(
-            executed.get("virtual_message_added") and len(bridge.inspect()["messages"]) == 1)
+        observed = bridge.inspect()
+        messages = observed.get("messages", [])
+        checks["one_attributed_record"] = (
+            executed.get("ok") is True and executed.get("submission_state") == "completed"
+            and observed.get("contact", {}).get("id") == "contact-01"
+            and len(messages) == 1 and messages[0].get("text") == "hello"
+            and ledger.state(op).state == "completed")
 
         replay = call_approver("approve", op, True)
-        checks["cross_uid_replay_rejected"] = not replay.get("ok", False)
+        checks["cross_uid_replay_rejected"] = approval_replay_rejected(replay)
         evidence["approver_replay_response"] = replay
 
         no_token = call_approver("list", "", False)

@@ -21,17 +21,25 @@ from .mcp_v04 import MCPServer
 from .operator import private_path
 
 
-class _RelayServer(socketserver.UnixStreamServer):
+class _RelayServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     allow_reuse_address = False
+    daemon_threads = True
     request_queue_size = 4
 
     def __init__(self, socket_path: str, api):
         self.api = api
+        self.dispatch_lock = threading.Lock()
+        self.closing = False
         super().__init__(socket_path, _RelayHandler)
+
+    def server_close(self):
+        with self.dispatch_lock:
+            self.closing = True
+        super().server_close()
 
 
 class _RelayHandler(socketserver.StreamRequestHandler):
-    timeout = 30
+    timeout = 300
 
     def handle(self):
         # Protocol state resets per connection; device/session state stays in CoreAPI.
@@ -39,15 +47,20 @@ class _RelayHandler(socketserver.StreamRequestHandler):
         while True:
             try:
                 message = read_message(self.rfile)
-            except EOFError:
+            except (EOFError, OSError):
                 return
-            except (ValueError, RecursionError, OSError):
+            except (ValueError, RecursionError):
                 try:
                     write_message(self.wfile, rpc_error(None, -32700, "Could not parse JSON message."))
                 except OSError:
                     return
                 continue
-            response = session.process(message)
+            # A client waiting on stdin must not block other sessions. Only
+            # processing a request holds the lock over the shared CoreAPI.
+            with self.server.dispatch_lock:
+                if self.server.closing:
+                    return
+                response = session.process(message)
             if response is None:
                 continue
             try:
@@ -75,10 +88,13 @@ def serve_backend(api, socket_path: str) -> None:
 
 def proxy_stdio(socket_path: str) -> int:
     """Bridge MCP JSON lines between stdio and the reconnectable backend."""
+    bridge = None
     try:
         bridge = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         bridge.connect(str(socket_path))
     except OSError as exc:
+        if bridge is not None:
+            bridge.close()
         print(f"relay backend unavailable: {exc}", file=sys.stderr)
         return 2
 
@@ -99,13 +115,13 @@ def proxy_stdio(socket_path: str) -> int:
     sender = threading.Thread(target=forward_stdin, daemon=True)
     sender.start()
     try:
-        reader = bridge.makefile("rb")
-        while True:
-            line = reader.readline(MAX_LINE + 1)
-            if not line:
-                break
-            sys.stdout.buffer.write(line)
-            sys.stdout.buffer.flush()
+        with bridge.makefile("rb") as reader:
+            while True:
+                line = reader.readline(MAX_LINE + 1)
+                if not line:
+                    break
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
     except (BrokenPipeError, OSError):
         pass
     finally:

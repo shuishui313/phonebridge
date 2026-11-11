@@ -1,11 +1,13 @@
 import json
 import unittest
+from unittest.mock import Mock, patch
 
 from phonebridge.api import ACTION_SPECS, CoreAPI
 from phonebridge.core import PhoneBridge
-from phonebridge.drivers import MockIPhone
+from phonebridge.drivers import AppleSimulatorDriver, MockIPhone
 from phonebridge.intents import ChannelRouter, SyntheticIntentExecutor
 from phonebridge.mcp_v04 import MCPServer, PARAMS
+from phonebridge.xcode_mcp import XcodeMCPDriver
 
 
 class StubExecutor:
@@ -33,14 +35,38 @@ class IntentChannelTests(unittest.TestCase):
         self.assertFalse(policy["real_app_intents_verified"])
         self.assertFalse(policy["real_shortcuts_invoked"])
         entries = {item["name"]: item for item in result["capabilities"]}
-        self.assertEqual(set(entries), {"device.status", "contacts.lookup",
-                                        "chat.readback", "message.send"})
-        for name in ("device.status", "contacts.lookup", "chat.readback"):
-            self.assertTrue(entries[name]["side_effect_free"])
-            self.assertEqual(entries[name]["channel"], "A")
-        self.assertFalse(entries["message.send"]["side_effect_free"])
-        self.assertTrue(entries["message.send"]["requires_approval"])
-        self.assertEqual(entries["message.send"]["channel"], "blocked")
+        self.assertEqual(set(entries), {"device.status", "contacts.lookup", "chat.readback"})
+        for entry in entries.values():
+            self.assertTrue(entry["side_effect_free"])
+            self.assertEqual(entry["channel"], "A")
+        [send] = result["blocked_capabilities"]
+        self.assertEqual(send["name"], "message.send")
+        self.assertFalse(send["side_effect_free"])
+        self.assertTrue(send["requires_approval"])
+        self.assertEqual(send["channel"], "blocked")
+
+    def test_unsupported_drivers_do_not_publish_or_execute_synthetic_intents(self):
+        udid = "00000000-0000-0000-0000-000000000000"
+        drivers = (AppleSimulatorDriver(udid, runner=Mock()),
+                   XcodeMCPDriver(udid, client=Mock(), simulator_checker=Mock()))
+        for driver in drivers:
+            with (
+                self.subTest(driver=driver.kind),
+                patch.object(driver, "observe") as observe,
+                patch.object(driver, "status", return_value={"ok": True}) as status,
+            ):
+                api = CoreAPI(PhoneBridge(driver))
+                self.assertEqual(api.dispatch("intents_list")["capabilities"], [])
+                for name in ("device.status", "contacts.lookup", "chat.readback"):
+                    result = api.dispatch("intent_run", {"capability": name})
+                    self.assertEqual(result["error"], "intent_not_published")
+                    self.assertEqual(result["routing"]["channel"], "B")
+                    self.assertTrue(result["routing"]["fallback_allowed"])
+                    self.assertFalse(result["retry"]["allowed"])
+                    self.assertFalse(result.get("pause", False))
+                observe.assert_not_called()
+                status.assert_not_called()
+                self.assertFalse(api.dispatch("phone_status")["task"]["paused"])
 
     def test_intent_actions_match_advertised_mcp_contract(self):
         self.assertEqual(set(PARAMS), set(ACTION_SPECS))
@@ -56,11 +82,23 @@ class IntentChannelTests(unittest.TestCase):
         self.assertFalse(result["routing"]["fallback_allowed"])
         self.assertEqual(len(result["result"]["contacts"]), 4)
 
-    def test_chat_readback_verifies_fresh_observation(self):
-        result = self.make_api().dispatch("intent_run", {"capability": "chat.readback"})
+    def test_chat_readback_requires_a_selected_conversation(self):
+        api = self.make_api()
+        args = {"capability": "chat.readback"}
+        home = api.dispatch("intent_run", args)
+        self.assertEqual(home["error"], "intent_chat_not_selected")
+        self.assertFalse(home["retry"]["allowed"])
+        self.assertNotIn("verification", home)
+        self.assertTrue(api.dispatch("phone_open_app", {"app": "messaging"})["ok"])
+        contacts = api.dispatch("intent_run", args)
+        self.assertEqual(contacts["error"], "intent_chat_not_selected")
+        self.assertTrue(api.dispatch("contacts_open", {"contact": "contact-01"})["ok"])
+        result = api.dispatch("intent_run", args)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["verification"]["source"], "intent_readback")
-        self.assertIsInstance(result["result"]["messages"], list)
+        self.assertEqual(result["result"]["contact"]["id"], "contact-01")
+        self.assertEqual(result["result"]["messages"], [])
+        self.assertEqual(result["result"]["revision"], api.bridge.driver.revision)
 
     def test_unpublished_capability_only_routes_to_b(self):
         result = self.make_api().dispatch("intent_run", {"capability": "unknown.capability"})
@@ -85,6 +123,7 @@ class IntentChannelTests(unittest.TestCase):
         result = api.dispatch("intent_run", {"capability": "contacts.lookup"})
         self.assertEqual(result["error"], "intent_execution_failed")
         self.assertTrue(result["routing"]["fallback_allowed"])
+        self.assertFalse(result["retry"]["allowed"])
         self.assertFalse(result.get("pause", False))
         self.assertTrue(api.dispatch("phone_open_app", {"app": "messaging"})["ok"])
 
@@ -94,9 +133,20 @@ class IntentChannelTests(unittest.TestCase):
         api = self.make_api(executor=executor)
         result = api.dispatch("intent_run", {"capability": "contacts.lookup"})
         self.assertFalse(result["routing"]["fallback_allowed"])
+        self.assertFalse(result["retry"]["allowed"])
         self.assertTrue(result.get("pause"))
         self.assertEqual(api.dispatch("phone_open_app", {"app": "messaging"})["error"],
                          "paused_pending_readback")
+
+    def test_executor_exception_disallows_fallback_and_retry(self):
+        executor = Mock()
+        executor.execute.side_effect = RuntimeError("fixture read failed")
+        api = self.make_api(executor=executor)
+        result = api.dispatch("intent_run", {"capability": "contacts.lookup"})
+        self.assertEqual(result["error"], "intent_execution_failed")
+        self.assertFalse(result["routing"]["fallback_allowed"])
+        self.assertFalse(result["retry"]["allowed"])
+        self.assertTrue(result["pause"])
 
     def test_unclear_readback_pauses_writes_and_resumes_after_fresh_readback(self):
         api = self.make_api(executor=SyntheticIntentExecutor(force_unclear=True))

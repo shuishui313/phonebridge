@@ -88,7 +88,7 @@ class CrossUIDSpikeTests(unittest.TestCase):
                 state["approve"] += 1
                 if state["approve"] == 1:
                     return result(stdout='{"ok": true, "approved": true}')
-                return result(stdout='{"ok": false, "error": "submission_already_processed"}')
+                return result(stdout='{"ok": false, "error": "unknown_or_processed_approval"}')
             return result(stdout='{"ok": false, "error": "approval_token_required"}')
 
         def rehearsed_approval(bridge, action, op):
@@ -114,6 +114,14 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertFalse(payload["cross_uid_process_verified"])
         self.assertIn("--authenticate", payload["on_site_command"])
         self.assertIn(str(ROOT), payload["on_site_command"])
+
+    def test_root_approver_is_rejected_before_attempting_sudo(self):
+        with mock.patch.object(spike, "probe_sudo") as probe, \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                spike.main(["--approver", "root"], runner=lambda *args, **kw: result())
+        self.assertEqual(error.exception.code, 2)
+        probe.assert_not_called()
 
     def test_authenticated_session_launches_one_agent_without_token(self):
         session = spike.ApproverSession(
@@ -206,11 +214,16 @@ class EvidenceVerificationTests(unittest.TestCase):
 
     def test_inconsistent_identity_and_responses_are_rejected(self):
         changes = [
-            ({"approver_uid": 2001}, "uids_not_distinct"),
+            ({"approver_uid": 2001}, "uids_not_distinct_non_root"),
+            ({"approver_uid": 0}, "uids_not_distinct_non_root"),
+            ({"service_uid": 0}, "uids_not_distinct_non_root"),
             ({"real_model_calls": True}, "model_calls_not_excluded"),
             ({"outcome": "blocked"}, "outcome_not_passed"),
             ({"approver_approve_response": {"ok": False}}, "approve_response_not_approved"),
+            ({"approver_approve_response": {"ok": True}}, "approve_response_not_approved"),
             ({"approver_replay_response": {"ok": True}}, "replay_not_rejected"),
+            ({"approver_replay_response": {"ok": False, "error": "approval_channel_unavailable"}},
+             "replay_not_rejected"),
             ({"on_site_command": "python3 -c pass"}, "on_site_command_missing"),
             ({"check_count": 14}, "check_count_mismatch"),
         ]

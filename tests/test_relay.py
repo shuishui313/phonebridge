@@ -7,13 +7,16 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from phonebridge.api import CoreAPI
 from phonebridge.hark import (
     build_codex_command,
     codex_env,
     parse_codex_output,
     ssh_wrap,
 )
+from phonebridge.relay import _RelayHandler, _RelayServer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,10 +78,16 @@ class RelayBackendTests(unittest.TestCase):
         self.addCleanup(self._stop_backend)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if self.socket_path.exists():
-                return
             if self.process.poll() is not None:
                 raise AssertionError("relay backend exited: " + (self.process.stderr.read() or ""))
+            if self.socket_path.exists():
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    try:
+                        probe.connect(str(self.socket_path))
+                    except OSError:
+                        pass
+                    else:
+                        return
             time.sleep(0.02)
         raise AssertionError("relay backend did not start")
 
@@ -95,38 +104,56 @@ class RelayBackendTests(unittest.TestCase):
 
     def test_reconnect_preserves_bridge_state(self):
         first = UnixMcpClient(self.socket_path)
+        self.addCleanup(first.close)
         first.initialize()
         self.assertTrue(first.call("phone_open_app", {"app": "messaging"})["ok"])
-        first.close()
 
+        # A new session gets its own handshake while the previous client waits.
         second = UnixMcpClient(self.socket_path)
+        self.addCleanup(second.close)
+        second.sock.settimeout(2)
+        self.assertEqual(second.request("tools/list")["error"]["code"], -32002)
         second.initialize()
         observed = second.call("phone_inspect")
         self.assertEqual(observed["app"], "messaging")
-        second.close()
+        first.sock.settimeout(2)
+        self.assertEqual(first.call("phone_inspect")["app"], "messaging")
 
     def test_stdio_proxy_connects_to_backend(self):
-        relay = subprocess.Popen(
-            [sys.executable, "-m", "phonebridge.relay", "stdio", "--socket", str(self.socket_path)],
-            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        command = build_codex_command("/bin/codex", sys.executable, str(ROOT),
+                                      str(self.socket_path), "prompt", str(self.root))
+        config = dict(setting.split("=", 1) for option, setting in zip(command, command[1:])
+                      if option == "-c")
+        executable = json.loads(config["mcp_servers.phonebridge.command"])
+        args = json.loads(config["mcp_servers.phonebridge.args"])
+        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "stdio-relay-test", "version": "0"}}}
+        relay = subprocess.run(
+            [executable, *args], cwd=ROOT, input=json.dumps(request) + "\n",
+            capture_output=True, text=True, timeout=10,
         )
-        try:
-            request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "stdio-relay-test", "version": "0"}}}
-            relay.stdin.write(json.dumps(request).encode("ascii") + b"\n")
-            relay.stdin.flush()
-            response = json.loads(relay.stdout.readline().decode("utf-8"))
-            self.assertEqual(response["id"], 1)
-            self.assertEqual(response["result"]["serverInfo"]["name"], "phonebridge")
-        finally:
-            relay.stdin.close()
-            self.assertEqual(relay.wait(timeout=10), 0)
-            relay.stderr.close()
+        self.assertEqual(relay.returncode, 0, relay.stderr)
+        response = json.loads(relay.stdout)
+        self.assertEqual(response["id"], 1)
+        self.assertEqual(response["result"]["serverInfo"]["name"], "phonebridge")
 
     def test_socket_permissions_are_private(self):
         mode = self.socket_path.stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
+
+
+class RelayTimeoutTests(unittest.TestCase):
+    @patch.object(_RelayHandler, "timeout", 0.05)
+    def test_idle_socket_closes_without_an_mcp_parse_error(self):
+        with tempfile.TemporaryDirectory(prefix="pb-relay-idle-") as directory:
+            path = str(Path(directory) / "relay.sock")
+            with _RelayServer(path, CoreAPI()) as server:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                    conn.settimeout(2)
+                    conn.connect(path)
+                    server.handle_request()
+                    self.assertEqual(conn.recv(1), b"")
 
 
 class HarkHelperTests(unittest.TestCase):

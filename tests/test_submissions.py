@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from phonebridge.api import CoreAPI
 from phonebridge.approvals import ApprovalEndpoint, approval_request
@@ -228,6 +229,32 @@ class SubmissionTests(unittest.TestCase):
         PhoneBridge(driver, ledger=ledger).recover_submissions()
         again = PhoneBridge(driver, ledger=ledger).recover_submissions()
         self.assertEqual(again["recovered"], [])
+
+    def test_reconcile_requires_target_and_survives_restart_without_replay(self):
+        ledger = self.ledger()
+        bridge, op = approved(ledger=ledger, hooks={"crash_before_send": lambda: None})
+        with self.assertRaises(SimulatedCrash):
+            bridge.execute(op)
+        mock = bridge.driver
+        ui_driver = SimpleNamespace(observe=mock.observe, messages=mock.messages)
+        restarted = PhoneBridge(ui_driver, ledger=ledger)
+        self.assertEqual(restarted.recover_submissions()["pending_operations"], [op])
+        api = CoreAPI(restarted)
+        self.assertEqual(api.resume_after_readback()["error"], "submission_operation_id_required")
+
+        self.assertTrue(mock.back()["ok"])
+        self.assertTrue(mock.open_chat("contact-01")["ok"])
+        self.assertEqual(api.resume_after_readback(op)["error"], "readback_target_mismatch")
+        self.assertEqual(api.dispatch("phone_home")["error"], "paused_pending_readback")
+
+        self.assertTrue(mock.back()["ok"])
+        self.assertTrue(mock.open_chat("contact-02")["ok"])
+        result = api.resume_after_readback(op)
+        self.assertTrue(result["resumed"], result)
+        self.assertFalse(result["resent"])
+        self.assertEqual(ledger.state(op).state, "reconciled")
+        self.assertFalse(restarted.driver.messages["contact-02"])
+        self.assertFalse(CoreAPI(PhoneBridge(ledger=ledger)).status()["task"]["paused"])
 
     # --- single submission entry and bypass detection -----------------------
 

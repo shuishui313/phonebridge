@@ -7,6 +7,8 @@ import threading
 import unittest
 from pathlib import Path
 
+from phonebridge.submissions import SubmissionLedger
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = [sys.executable, "-m", "phonebridge.cli"]
@@ -148,6 +150,36 @@ class SubprocessTests(unittest.TestCase):
             "independent_approval_required",
         )
         self.assertEqual(tool("phone_inspect")["messages"], [])
+
+    def test_repeated_process_restart_preserves_pause_until_trusted_reconciliation(self):
+        with tempfile.TemporaryDirectory(prefix="pb-v04-recovery-") as directory:
+            ledger_path = str(Path(directory) / "submissions.jsonl")
+            socket_path = str(Path(directory) / "approval.sock")
+            ledger = SubmissionLedger(ledger_path)
+            for operation in ("pending-1", "pending-2"):
+                ledger.append("approved", op_id=operation, recipient_id="contact-02")
+            ledger.append("dispatching", op_id="pending-1", recipient_id="contact-02",
+                          message_sha256="0" * 64, baseline_count=0)
+            args = ["--submission-state", ledger_path, "--approval-socket", socket_path]
+            self.start_server(*args)
+            self.doCleanups()
+            try:
+                tool = self.start_server(*args)
+                self.assertEqual(tool("phone_status")["task"]["pending_submissions"], 2)
+                self.assertTrue(tool("phone_inspect")["ok"])
+                self.assertEqual(tool("phone_home")["error"], "paused_pending_readback")
+                for operation, resumed in (("pending-1", False), ("pending-2", True)):
+                    reply = subprocess.run(
+                        [*CLI, "--approval-socket", socket_path, "approvals", "reconcile", operation],
+                        cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT,
+                    )
+                    self.assertEqual(reply.returncode, 0, reply.stderr)
+                    result = json.loads(reply.stdout)
+                    self.assertEqual(result["resumed"], resumed)
+                    self.assertFalse(result["resent"])
+                self.assertTrue(tool("phone_home")["ok"])
+            finally:
+                self.doCleanups()
 
 
 if __name__ == "__main__":

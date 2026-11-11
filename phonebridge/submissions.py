@@ -20,12 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .drivers import fail
+from .drivers import MockIPhone, fail
 
 EVENTS = frozenset({"prepared", "approved", "denied", "dispatching",
-                    "completed", "unresolved"})
-NON_REPLAYABLE = frozenset({"dispatching", "completed", "unresolved", "denied"})
+                    "completed", "unresolved", "reconciled"})
+NON_REPLAYABLE = frozenset({"dispatching", "completed", "unresolved", "denied", "reconciled"})
 RECOVERABLE = frozenset({"approved", "dispatching"})
+NO_DEVICE_CALL = frozenset({"stale_or_expired_proposal", "real_message_sending_disabled"})
 
 
 class SimulatedCrash(Exception):
@@ -42,6 +43,12 @@ class SubmissionState:
     state: str = "prepared"
     events: list[str] = field(default_factory=list)
     updated_at: str | None = None
+    detail: str | None = None
+
+    @property
+    def pending_readback(self) -> bool:
+        return (self.state == "dispatching"
+                or (self.state == "unresolved" and self.detail not in NO_DEVICE_CALL))
 
 
 def _replay(records: list[dict]) -> dict[str, SubmissionState]:
@@ -55,6 +62,7 @@ def _replay(records: list[dict]) -> dict[str, SubmissionState]:
         current.events.append(event)
         current.state = event
         current.updated_at = record.get("ts")
+        current.detail = record.get("detail")
         for key in ("recipient_id", "message_sha256", "message_chars", "baseline_count"):
             if record.get(key) is not None:
                 setattr(current, key, record[key])
@@ -317,7 +325,10 @@ class SubmissionGate:
                     continue
                 evidence = submission_evidence(self.bridge.driver, state.recipient_id,
                                                state.message_sha256, state.baseline_count)
-                confirmed = evidence["matched"] and not evidence["unclear"]
+                confirmed = (state.state == "dispatching"
+                             and evidence["matched"] and not evidence["unclear"]
+                             and record_count_for(self.bridge.driver, state.recipient_id)
+                             == state.baseline_count + 1)
                 event = "completed" if confirmed else "unresolved"
                 detail = "recovered_confirmed_no_resend" if confirmed else "recovered_paused_no_resend"
                 txn.append(event, op_id=op_id, recipient_id=state.recipient_id,
@@ -327,5 +338,44 @@ class SubmissionGate:
                 report.append({"op_id": op_id, "prior_state": state.state,
                                "state": event, "confirmed": confirmed,
                                "resent": False, "evidence": evidence["source"]})
-        return {"ok": True, "recovered": report, "pending_pause":
-                sum(1 for item in report if not item["confirmed"])}
+            pending = [op_id for op_id, state in txn.replay().items()
+                       if state.pending_readback]
+        return {"ok": True, "recovered": report, "pending_pause": len(pending),
+                "pending_operations": pending}
+
+    def pending_operations(self) -> list[str]:
+        return [op_id for op_id, state in self.ledger.replay().items()
+                if state.pending_readback]
+
+    def reconcile(self, op_id: str, observed: dict) -> dict:
+        """Close one pending operation using current evidence, without replay."""
+        with self.ledger.transaction() as txn:
+            state = txn.state(op_id)
+            if not state or not state.pending_readback:
+                return fail("unknown_or_resolved_operation")
+            event = "reconciled"
+            detail = "verified_not_dispatched"
+            if "dispatching" in state.events:
+                contact = observed.get("contact")
+                selected = (contact.get("id") if isinstance(contact, dict)
+                            else observed.get("selected_id"))
+                driver = self.bridge.driver
+                # Mock has a direct per-recipient store even on its home screen.
+                # UI drivers only populate the recipient cache from the current chat.
+                if (not isinstance(driver, MockIPhone)
+                        and (observed.get("screen") != "chat" or selected != state.recipient_id)):
+                    return fail("readback_target_mismatch")
+                evidence = submission_evidence(driver, state.recipient_id,
+                                               state.message_sha256, state.baseline_count)
+                count = record_count_for(driver, state.recipient_id)
+                if evidence["unclear"]:
+                    return fail("readback_not_confirmed")
+                if evidence["matched"] and count == state.baseline_count + 1:
+                    event, detail = "completed", "verified_attributed_record"
+                elif evidence["source"] == "no_new_record" and count == state.baseline_count:
+                    detail = "verified_no_new_record"
+                else:
+                    return fail("readback_not_confirmed")
+            txn.append(event, op_id=op_id, detail=detail)
+        return {"ok": True, "operation_id": op_id, "submission_state": event,
+                "evidence": detail, "resent": False}

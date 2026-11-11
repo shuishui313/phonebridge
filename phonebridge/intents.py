@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .drivers import fail
+from .drivers import MESSAGING_APP, MockIPhone, fail
 
 
 @dataclass(frozen=True)
@@ -22,11 +22,15 @@ class IntentCapability:
     side_effect_free: bool = True
     requires_approval: bool = False
 
+    @property
+    def read_only(self) -> bool:
+        return self.side_effect_free and not self.requires_approval
+
     def disclosure(self) -> dict:
         return {"name": self.name, "summary": self.summary,
                 "side_effect_free": self.side_effect_free,
                 "requires_approval": self.requires_approval,
-                "channel": "A" if self.side_effect_free else "blocked"}
+                "channel": "A" if self.read_only else "blocked"}
 
 
 CATALOG: dict[str, IntentCapability] = {
@@ -35,7 +39,7 @@ CATALOG: dict[str, IntentCapability] = {
     "contacts.lookup": IntentCapability(
         "contacts.lookup", "List synthetic fixture contacts", "contacts"),
     "chat.readback": IntentCapability(
-        "chat.readback", "Read back the current synthetic chat record", "messages"),
+        "chat.readback", "Read messages for the currently selected Mock chat", "messages"),
     "message.send": IntentCapability(
         "message.send", "Write action, not published for direct intent calls", "",
         side_effect_free=False, requires_approval=True),
@@ -50,9 +54,8 @@ _BRIDGE_READERS = {
 class SyntheticIntentExecutor:
     """Deterministic read-only executor over an injected bridge.
 
-    Published intents must not depend on the current UI screen: that would
-    turn channel A into a disguised channel B interaction. Drivers without the
-    synthetic published data simply report the capability as unavailable.
+    Read from the Mock fixture without performing device interactions. Chat
+    readback uses the fixture's selected conversation as its recipient scope.
     """
 
     def __init__(self, *, force_unclear: bool = False):
@@ -71,17 +74,19 @@ class SyntheticIntentExecutor:
             return {"ok": False, "error": "intent_not_executable",
                     "no_side_effect_confirmed": True}
         else:
-            try:
-                payload = getattr(bridge, method)()
-            except Exception:
-                return {"ok": False, "error": "intent_execution_failed",
-                        "no_side_effect_confirmed": False}
+            payload = getattr(bridge, method)()
         if not isinstance(payload, dict) or not payload.get("ok"):
             return {"ok": False, "error": "intent_execution_failed",
                     "no_side_effect_confirmed": False}
         if entry.name == "chat.readback":
-            verified = (isinstance(payload.get("messages"), list)
-                        and payload.get("revision") is not None)
+            if payload.get("app") != MESSAGING_APP or payload.get("screen") != "chat":
+                return {"ok": False, "error": "intent_chat_not_selected",
+                        "no_side_effect_confirmed": True}
+            contact = payload.get("contact")
+            recipient_id = contact.get("id") if isinstance(contact, dict) else None
+            verified = (isinstance(recipient_id, str) and bool(recipient_id)
+                        and isinstance(payload.get("messages"), list)
+                        and type(payload.get("revision")) is int)
         else:
             value = payload.get(entry.result_key)
             verified = isinstance(value, (list, dict)) and bool(value)
@@ -109,27 +114,36 @@ class ChannelRouter:
                 "real_app_intents_verified": False,
                 "real_shortcuts_invoked": False}
 
-    def capabilities(self) -> dict:
+    def capabilities(self, bridge: Any) -> dict:
+        is_mock = isinstance(bridge.driver, MockIPhone)
         return {"ok": True, "channel": "A", "policy": self.policy(),
-                "capabilities": [entry.disclosure() for entry in self.catalog.values()],
-                "note": ("Synthetic fixture capabilities only. No system or "
+                "capabilities": [entry.disclosure() for entry in self.catalog.values()
+                                 if is_mock and entry.read_only],
+                "blocked_capabilities": [entry.disclosure() for entry in self.catalog.values()
+                                         if not entry.read_only],
+                "note": ("Only the Mock driver publishes synthetic intents. No system or "
                          "third-party App action is claimed or invoked.")}
 
     def run(self, capability: str, bridge: Any) -> dict:
         entry = self.catalog.get(capability)
-        if entry is None:
-            return fail("intent_not_published", capability=capability,
-                        routing={"channel": "B", "fallback_allowed": True,
-                                 "reason": "no_published_intent",
-                                 "automatic_retry": False})
-        if not entry.side_effect_free or entry.requires_approval:
+        if entry is not None and not entry.read_only:
             return fail("intent_requires_approval", capability=capability,
                         routing={"channel": "blocked", "fallback_allowed": False,
                                  "reason": "write_action_requires_trusted_approval",
                                  "automatic_retry": False})
-        outcome = self.executor.execute(entry, bridge)
-        if not outcome.get("ok"):
-            confirmed = bool(outcome.get("no_side_effect_confirmed"))
+        if entry is None or not isinstance(bridge.driver, MockIPhone):
+            return fail("intent_not_published", capability=capability,
+                        routing={"channel": "B", "fallback_allowed": True,
+                                 "reason": "no_published_intent",
+                                 "automatic_retry": False})
+        try:
+            outcome = self.executor.execute(entry, bridge)
+        except Exception:
+            outcome = None
+        if not isinstance(outcome, dict):
+            outcome = fail("intent_execution_failed")
+        if outcome.get("ok") is not True:
+            confirmed = outcome.get("no_side_effect_confirmed") is True
             return fail(outcome.get("error") or "intent_execution_failed",
                         capability=capability,
                         routing={"channel": "A", "outcome": "failed",
@@ -138,7 +152,7 @@ class ChannelRouter:
                                             else "side_effect_unconfirmed"),
                                  "automatic_retry": False},
                         pause=not confirmed)
-        if not outcome.get("verified"):
+        if outcome.get("verified") is not True or not isinstance(outcome.get("result"), dict):
             return fail("intent_readback_unclear", capability=capability,
                         routing={"channel": "A", "outcome": "unclear",
                                  "fallback_allowed": False,

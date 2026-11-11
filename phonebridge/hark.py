@@ -129,14 +129,14 @@ def ssh_wrap(command: list[str], destination: str, *, port: int | None = None,
 def build_codex_command(codex_path: str, python: str, repo_root: str,
                         socket_path: str, prompt: str, workspace: str,
                         trusted_project: str | None = None) -> list[str]:
-    relay_args = relay_stdio_command(python, socket_path)
+    relay_executable, *relay_args = relay_stdio_command(python, socket_path)
     command = [
         codex_path, "exec", "--json", "--ephemeral", "--approve-for-me",
         "--ignore-rules", "--skip-git-repo-check", "-C", workspace,
         "-c", "mcp_servers.phonebridge.enabled=true",
         "-c", "mcp_servers.phonebridge.startup_timeout_sec=30",
         "-c", "mcp_servers.phonebridge.tool_timeout_sec=120",
-        "-c", f"mcp_servers.phonebridge.command={json.dumps(python)}",
+        "-c", f"mcp_servers.phonebridge.command={json.dumps(relay_executable)}",
         "-c", "mcp_servers.phonebridge.args=" + json.dumps(relay_args),
         "-c", f"mcp_servers.phonebridge.cwd={json.dumps(repo_root)}",
     ]

@@ -23,7 +23,8 @@ from phonebridge.mcp_v04 import MCPServer
 
 def main() -> int:
     checks: dict[str, bool] = {}
-    api = CoreAPI(PhoneBridge(MockIPhone()), max_read_retries=100)
+    driver = MockIPhone()
+    api = CoreAPI(PhoneBridge(driver), max_read_retries=100)
     server = MCPServer(api)
     server.process({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                     "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -54,11 +55,12 @@ def main() -> int:
         and listing["policy"]["fallback_requires_no_side_effect_confirmation"])
 
     entries = {item["name"]: item for item in listing["capabilities"]}
+    blocked = {item["name"]: item for item in listing["blocked_capabilities"]}
     checks["write_intent_not_published_for_direct_use"] = bool(
-        entries["message.send"]["requires_approval"]
-        and not entries["message.send"]["side_effect_free"])
+        "message.send" not in entries and blocked["message.send"]["requires_approval"]
+        and not blocked["message.send"]["side_effect_free"])
 
-    before = api.dispatch("phone_inspect")["messages"]
+    before = driver.record_count()
     write = tool("intent_run", {"capability": "message.send"})
     checks["write_intent_blocked"] = (write["error"] == "intent_requires_approval"
                                       and write["routing"]["channel"] == "blocked")
@@ -74,12 +76,17 @@ def main() -> int:
         contacts.get("ok") and contacts["channel"] == "A"
         and contacts["verification"]["outcome"] == "clear"
         and len(contacts["result"]["contacts"]) == 4)
-    chat = tool("intent_run", {"capability": "chat.readback"})
+    chat_args = {"capability": "chat.readback"}
+    unselected = tool("intent_run", chat_args)
+    opened_app = tool("phone_open_app", {"app": "messaging"})
+    opened_chat = tool("contacts_open", {"contact": "contact-01"})
+    chat = tool("intent_run", chat_args)
     checks["chat_readback_is_fresh"] = bool(
-        chat.get("ok") and isinstance(chat["result"]["messages"], list)
-        and chat["result"]["revision"] is not None)
-    checks["no_records_created_by_channel_a"] = (
-        before == [] and api.dispatch("phone_inspect")["messages"] == [])
+        unselected.get("error") == "intent_chat_not_selected"
+        and not unselected["retry"]["allowed"] and opened_app["ok"] and opened_chat["ok"]
+        and chat.get("ok") and chat["result"]["contact"]["id"] == "contact-01"
+        and chat["result"]["messages"] == [] and chat["result"]["revision"] == driver.revision)
+    checks["no_records_created_by_channel_a"] = before == driver.record_count() == 0
 
     status = tool("phone_status")
     checks["status_discloses_routing"] = (

@@ -25,7 +25,7 @@ flowchart TD
 | --- | --- |
 | `phonebridge/cli.py` | 选择 `mock`、`simctl` 或 `xcode-mcp`，以 `serve`（stdio）或 `backend`（私有 Unix 套接字 + relay）启动 MCP 服务和可选审批端点，或发出审批命令。 |
 | `phonebridge/mcp_v04.py` | 管理 stdio JSON-RPC 握手、发现、工具入参与结果；作为薄壳调用稳定内部 API。 |
-| `phonebridge/api.py` | `CoreAPI.dispatch` 是 MCP 壳与未来独立 App 壳共用的唯一内部入口；`TaskGovernor` 管任务时限、动作预算、有限重试建议与只读重试上限；`intents_list` / `intent_run` 交给 `ChannelRouter`，其余动作走设备桥接。状态改变后按当次证据回读，结果不明即**持久暂停所有写动作**、只读放行，须由可信侧 `resume_after_readback()` 绑定成功回读才恢复。任务窗口重置、暂停解除与审批动作都不暴露给 Agent。 |
+| `phonebridge/api.py` | `CoreAPI.dispatch` 统一 MCP 和未来 App 的内部入口，限制任务时间、动作次数和重试。回读不明会暂停写入，未决提交的暂停由台账在后端启动时恢复。恢复核对只走可信审批端。通道 A 根据驱动公布合成能力，B 的交互和审批仍走同一核心。 |
 | `phonebridge/intents.py` | 通道 A 的显式公开能力清单与 `ChannelRouter`：只登记自有合成夹具的无副作用只读能力；未公开能力只返回「可走 B」的决策，不自动执行设备动作；写意图直接拒绝；A 失败需确认无副作用才可回退，回读不明则暂停写入且不自动重试。**不调用真实 App Intents 或快捷指令**。 |
 | `phonebridge/core.py` | 校验设备上下文与输入，绑定审批到操作 ID、联系人、正文与状态版本；`approve` / `deny` 先持久化再改内存，`execute` 只委托唯一提交门。 |
 | `phonebridge/submissions.py` | `SubmissionLedger` 持久化脱敏状态迁移与派发前记录基线（0700 目录 / 0600 文件、`flock`、`fsync`），是审批状态的**唯一事实来源**；`SubmissionGate` 是唯一允许调用 `driver.virtual_send` 的路径，派发前须确认台账中有 `approved` 事件，恢复只接受可归属到该收件人的新增记录，否则暂停且不自动重发。 |

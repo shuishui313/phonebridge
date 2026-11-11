@@ -1,10 +1,13 @@
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
+from phonebridge import approvals as approvals_module
 from phonebridge.approvals import ApprovalEndpoint, approval_request
 from phonebridge.core import PhoneBridge
 from phonebridge.hosted import (account_name, grant_approver_access, platform_supported,
@@ -20,7 +23,9 @@ def ok_runner(command, **kw):
 
 
 def failing_runner(command, **kw):
-    return SimpleNamespace(returncode=1, stdout="", stderr="grant denied")
+    if command[:2] == ["chmod", "+a"]:
+        return SimpleNamespace(returncode=1, stdout="", stderr="grant denied")
+    return ok_runner(command, **kw)
 
 
 class HostedApprovalTests(unittest.TestCase):
@@ -60,6 +65,39 @@ class HostedApprovalTests(unittest.TestCase):
     def test_hosted_fails_closed_when_the_acl_grant_fails(self):
         with self.assertRaises(PermissionError):
             self.endpoint(acl_runner=failing_runner).start()
+        self.assertFalse(self.path.exists())
+
+    def test_hosted_rejects_shared_directory_without_touching_ledger(self):
+        ledger = self.directory / "submissions.jsonl"
+        ledger.write_text("existing ledger", encoding="utf-8")
+        with self.assertRaisesRegex(PermissionError, "dedicated empty"):
+            self.endpoint().start()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(ledger.read_text(encoding="utf-8"), "existing ledger")
+
+    def test_hosted_removes_directory_grant_on_close_and_startup_failure(self):
+        def grant_then_fail(command, **kw):
+            result = subprocess.run(command, **kw)
+            if command[:2] == ["chmod", "+a"] and command[-1] == str(self.directory):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return SimpleNamespace(returncode=1, stdout="", stderr="grant outcome unknown")
+            return result
+
+        with self.assertRaisesRegex(PermissionError, "ACL grant failed"):
+            self.endpoint(acl_runner=grant_then_fail).start()
+        self.assertFalse(self.path.exists())
+        self.assertFalse(verify_acl(self.directory, OTHER_UID)["ok"])
+        with self.endpoint(acl_runner=None):
+            self.assertTrue(verify_acl(self.directory, OTHER_UID)["ok"])
+        self.assertFalse(verify_acl(self.directory, OTHER_UID)["ok"])
+        self.assertFalse(self.path.exists())
+
+    def test_hosted_rejects_a_directory_with_a_preexisting_acl(self):
+        grant = f"user:{account_name(OTHER_UID)} allow search"
+        subprocess.run(["chmod", "+a", grant, str(self.directory)], check=True)
+        with self.assertRaisesRegex(PermissionError, "without existing ACLs"):
+            self.endpoint(acl_runner=None).start()
+        self.assertTrue(verify_acl(self.directory, OTHER_UID)["ok"])
         self.assertFalse(self.path.exists())
 
     def test_hosted_upgrades_isolation_without_weakening_modes(self):
@@ -112,10 +150,28 @@ class HostedApprovalTests(unittest.TestCase):
         finally:
             endpoint.close()
 
-    def test_hosted_client_rejects_a_world_writable_parent(self):
+    def test_hosted_client_rejects_wrong_connected_uid_before_sending_token(self):
+        with self.endpoint(), \
+             mock.patch.object(approvals_module, "peer_credential_uid", return_value=OTHER_UID), \
+             mock.patch.object(approvals_module, "write_message") as write:
+            reply = approval_request(str(self.path), "list", token=TOKEN, hosted=True)
+        self.assertEqual(reply["error"], "approval_service_peer_not_trusted")
+        self.assertFalse(any("token" in call.args[1] for call in write.call_args_list))
+
+    def test_reconciliation_uses_trusted_approval_channel(self):
+        reconcile = mock.Mock(return_value={"ok": True})
+        with self.endpoint(reconcile_submission=reconcile):
+            self.assertEqual(approval_request(str(self.path), "reconcile", "operation",
+                                              hosted=True)["error"], "approval_token_required")
+            reconcile.assert_not_called()
+            self.assertTrue(approval_request(str(self.path), "reconcile", "operation",
+                                             token=TOKEN, hosted=True)["ok"])
+        reconcile.assert_called_once_with("operation")
+
+    def test_hosted_client_rejects_a_group_writable_parent(self):
         endpoint = self.endpoint().start()
         try:
-            os.chmod(self.directory, 0o702)
+            os.chmod(self.directory, 0o720)
             with self.assertRaises(ValueError):
                 approval_request(str(self.path), "list", token=TOKEN, hosted=True)
         finally:
@@ -158,8 +214,6 @@ class HostedApprovalTests(unittest.TestCase):
             endpoint.close()
 
     def test_client_returns_structured_error_when_peer_closes_early(self):
-        from unittest import mock
-        from phonebridge import approvals as approvals_module
         endpoint = self.endpoint().start()
         try:
             with mock.patch.object(approvals_module, "write_message",

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from .api import CoreAPI
 from .approvals import ApprovalEndpoint, approval_request
@@ -54,7 +55,7 @@ def main(argv=None):
     backend = sub.add_parser("backend", help="Serve MCP on a private Unix socket for reconnecting clients")
     backend.add_argument("--socket", required=True, help="Private Unix socket path in a 0700 directory")
     ap = sub.add_parser("approvals")
-    ap.add_argument("action", choices=["list", "approve", "deny"])
+    ap.add_argument("action", choices=["list", "approve", "deny", "reconcile"])
     ap.add_argument("id", nargs="?")
     ap.add_argument("--token-env", help="Env var holding the approval token")
     ap.add_argument("--socket-owner-uid", type=int, help="Socket owner UID for a separate approver account")
@@ -62,8 +63,8 @@ def main(argv=None):
     if args.command == "approvals":
         if not args.approval_socket:
             p.error("--approval-socket is required for approvals")
-        if args.action in ("approve", "deny") and not args.id:
-            p.error("approval ID required")
+        if args.action != "list" and not args.id:
+            p.error("operation ID required")
         token = os.environ.get(args.token_env) if args.token_env else None
         try:
             response = approval_request(args.approval_socket, args.action, args.id,
@@ -87,6 +88,12 @@ def main(argv=None):
                     "from the service account")
         if not token:
             p.error("--approval-hosted needs an approval token in --approval-token-env")
+        approval_directory = Path(args.approval_socket).resolve().parent
+        for flag, path in (("--submission-state", args.submission_state),
+                           ("--audit-path", args.audit_path),
+                           ("backend --socket", getattr(args, "socket", None))):
+            if path and Path(path).resolve().is_relative_to(approval_directory):
+                p.error(f"{flag} must be outside the dedicated hosted approval directory")
     if args.require_approval_isolation:
         if not args.approval_socket:
             p.error("--require-approval-isolation needs --approval-socket")
@@ -118,7 +125,7 @@ def main(argv=None):
                                     virtual_submit_enabled=args.allow_fixture_virtual_submit)
         bridge = PhoneBridge(driver, audit_path=args.audit_path, ledger=ledger)
         recovery = bridge.recover_submissions()
-        if recovery["recovered"]:
+        if recovery["recovered"] or recovery["pending_pause"]:
             print(json.dumps({"submission_recovery": recovery}, ensure_ascii=False), file=sys.stderr)
         api = CoreAPI(bridge, time_limit=args.task_timeout, action_budget=args.action_budget,
                       max_read_retries=args.max_read_retries, max_retries=args.max_retries)
@@ -131,7 +138,8 @@ def main(argv=None):
         if args.approval_socket:
             with ApprovalEndpoint(bridge, args.approval_socket, token=token,
                                   required_uid=args.approval_uid,
-                                  hosted=args.approval_hosted):
+                                  hosted=args.approval_hosted,
+                                  reconcile_submission=api.resume_after_readback):
                 serve_api()
         else:
             serve_api()

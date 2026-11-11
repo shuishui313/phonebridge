@@ -27,6 +27,8 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 下一阶段
 
+基于 `ab853ca` 的复审修复已落实到代码。托管审批使用专用目录并回收 ACL，重启从台账恢复未决操作的暂停，Hark 统一接常驻 relay，通道 A 只公布当前驱动可用的合成能力。先按手册用真实 Hark 和 Codex 做 Mock 只读联调。新版跨 UID 审批与 Simulator 联合可写验收随后进行，上一版本的现场结果作为历史证据保留。 [复审修复记录](docs/reviews/ab853ca-response.md) · [Hark 接入步骤](docs/hark-codex.md)
+
 1. **步骤 3 · Hark 客户端端到端（G2 剩余阻塞项）**：主机侧链路已通过（relay 重连、直连与 SSH 回环、四类证据、51 项判据、9 次会话），G2 剩余阻塞项收敛为在 Hark 客户端发起真实 SSH 会话与自然语言任务，并确认真实 Codex 模型能稳定发现并调用 MCP 工具、在 Hark 内回读结果；真实模型工具注入本机不稳定，须在现场环境重新验收，先单列连接／编排问题再判定防重。通道 A 可并行验证自有 App 的无副作用意图。该项通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
 2. **真实跨账号进程现场验收 · 已完成（2026-11-11）**：操作者执行 `cd <repo> && python3 scripts/cross-uid-approval-spike.py --approver <approver> --authenticate` 取得 `outcome: "passed"`、`cross_uid_process_verified: true`、`approver_process_real: true`、`check_count: 15`，15 项判据全过；评审 `711ab2a` 的 P1-4 真实跨账号验收补齐。复跑时脚本本体不要用 `sudo`（会使服务侧变成 root，改变两个非特权账号分离的语义），密码由 sudo 直接提示一次，脚本不读取、不存储、不转发。`--verify-evidence <PATH>` 可对保存的现场 JSON 做只读结构复核，彩排与篡改结果会被拒；它不重新执行验收，也不能证明文件来源。**后续仍需**：真机与独立审批设备上的审批通道验证，本次只覆盖 macOS 本机两个非特权账号。 [评审回复](docs/reviews/711ab2a-response.md) · [测试报告](docs/test-report.md)
 3. **G1 剩余项**：在隔离 Codex 会话中按 `scripts/xcode-mcp-draft-spike.py` 的等价工具序列复核自然语言拟稿，单独记录结果；该项仍为待办，不与自动化脚本结果合并。 [测试报告](docs/test-report.md)

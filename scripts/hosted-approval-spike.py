@@ -53,7 +53,9 @@ def main() -> int:
         evidence["approver_name"] = account_name(approver_uid)
         evidence["service_uid"] = os.getuid()
 
-        socket_path = work / "approval.sock"
+        approval_dir = work / "approval"
+        approval_dir.mkdir(mode=0o700)
+        socket_path = approval_dir / "approval.sock"
         endpoint = ApprovalEndpoint(
             PhoneBridge(), str(socket_path), token=TOKEN,
             required_uid=int(approver_uid),
@@ -61,16 +63,16 @@ def main() -> int:
         endpoints.append(endpoint)
 
         checks["acl_grant_succeeded"] = bool(endpoint.acl_status.get("ok"))
-        dir_acl = verify_acl(work, int(approver_uid))
+        dir_acl = verify_acl(approval_dir, int(approver_uid))
         sock_acl = verify_acl(socket_path, int(approver_uid))
         checks["directory_acl_entry_verified"] = bool(dir_acl["ok"])
         checks["socket_acl_entry_verified"] = bool(sock_acl["ok"])
         evidence["directory_acl"] = dir_acl["listing"]
         evidence["socket_acl"] = sock_acl["listing"]
 
-        layout = verify_layout(work, socket_path, service_uid=os.getuid())
+        layout = verify_layout(approval_dir, socket_path, service_uid=os.getuid())
         checks["layout_still_private"] = bool(
-            layout["ok"] and stat.S_IMODE(work.lstat().st_mode) == 0o700
+            layout["ok"] and stat.S_IMODE(approval_dir.lstat().st_mode) == 0o700
             and stat.S_IMODE(socket_path.lstat().st_mode) == 0o600)
         evidence["layout"] = {k: layout[k] for k in ("parent_mode", "socket_mode", "problems")}
 
@@ -99,7 +101,9 @@ def main() -> int:
         checks["missing_token_rejected"] = (
             missing_token["error"] == "approval_token_required")
 
-        wrong_path = work / "wrong-peer.sock"
+        wrong_dir = work / "wrong-peer"
+        wrong_dir.mkdir(mode=0o700)
+        wrong_path = wrong_dir / "approval.sock"
         wrong = ApprovalEndpoint(
             PhoneBridge(), str(wrong_path), token=TOKEN,
             required_uid=int(approver_uid),
@@ -122,6 +126,10 @@ def main() -> int:
             len(steps) == 2 and all(step["returncode"] == 0 for step in steps)
             and {step["target"] for step in steps} == {"directory", "socket"})
         evidence["acl_grant_steps"] = steps
+
+        endpoint.close()
+        checks["directory_acl_revoked_on_close"] = (
+            not socket_path.exists() and not verify_acl(approval_dir, int(approver_uid))["ok"])
 
         evidence["checks"] = checks
         evidence["check_count"] = len(checks)

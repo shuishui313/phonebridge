@@ -15,7 +15,8 @@ from typing import Any
 
 from .core import PhoneBridge
 from .drivers import fail
-from .hosted import grant_approver_access, verify_layout
+from .hosted import (grant_approver_access, require_dedicated_directory,
+                     revoke_approver_directory_access, verify_layout)
 from .mcp import read_message, write_message
 from .operator import private_path
 
@@ -53,14 +54,14 @@ class ApprovalEndpoint:
 
     With ``hosted=True`` the operator explicitly opts into an externally
     hosted endpoint: the service grants one named approver UID filesystem
-    ACLs on the directory and socket at startup, fails closed if that grant
-    fails, and still checks the peer UID on every connection. It requires a
-    token as well, so the isolation mode becomes ``token+external_uid``.
+    ACLs on a dedicated directory and its only socket, then removes those
+    grants during shutdown. Each connection still requires the peer UID
+    and token, so the isolation mode becomes ``token+external_uid``.
     """
 
     def __init__(self, bridge: PhoneBridge, path: str, *, token: str | None = None,
                  required_uid: int | None = None, peer_uid_fn=None,
-                 hosted: bool = False, acl_runner=None):
+                 hosted: bool = False, acl_runner=None, reconcile_submission=None):
         self.bridge = bridge
         self.path = Path(path)
         self.token = token
@@ -68,10 +69,12 @@ class ApprovalEndpoint:
         self.peer_uid_fn = peer_uid_fn or peer_credential_uid
         self.hosted = bool(hosted)
         self.acl_runner = acl_runner
+        self.reconcile_submission = reconcile_submission
         self.acl_status: dict = {}
         self._server = None
         self._thread = None
         self._socket_identity = None
+        self._directory_grant_pending = False
 
     @property
     def isolation_mode(self) -> str:
@@ -102,11 +105,13 @@ class ApprovalEndpoint:
         target = private_path(self.path)
         if os.path.lexists(target):
             raise FileExistsError(f"approval socket already exists: {target}")
+        if self.hosted:
+            require_dedicated_directory(target.parent, runner=self.acl_runner)
+            self.acl_status = {}
         bridge = self.bridge
         token, required_uid, peer_uid_fn = self.token, self.required_uid, self.peer_uid_fn
         hosted, acl_runner = self.hosted, self.acl_runner
-        bridge.approval_isolated = (self.isolation_mode == "token")
-        bridge.approval_isolation_mode = self.isolation_mode
+        reconcile_submission = self.reconcile_submission
 
         class Handler(socketserver.StreamRequestHandler):
             timeout = 3
@@ -136,6 +141,9 @@ class ApprovalEndpoint:
                             reply = bridge.approve(item)
                         elif op == "deny" and isinstance(item, str):
                             reply = bridge.deny(item)
+                        elif op == "reconcile" and isinstance(item, str):
+                            reply = (reconcile_submission(item) if reconcile_submission
+                                     else fail("reconciliation_unavailable"))
                         else:
                             reply = fail("unknown_approval_action")
                 except (OSError, ValueError, RecursionError):
@@ -152,22 +160,24 @@ class ApprovalEndpoint:
             self._socket_identity = (info.st_dev, info.st_ino)
             target.chmod(0o600)
             if hosted:
+                self._directory_grant_pending = True
                 acl = grant_approver_access(target.parent, target, required_uid,
                                             runner=acl_runner)
                 self.acl_status = acl
                 if not acl.get("ok"):
                     raise PermissionError(
                         "Hosted approval ACL grant failed: " + str(acl.get("error")))
-                bridge.approval_isolation_mode = self.isolation_mode
             server.server_activate()
             worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
             worker.start()
         except BaseException:
             server.server_close()
-            self._remove_socket()
+            self._cleanup_paths()
             raise
         self._server = server
         self._thread = worker
+        bridge.approval_isolation_mode = self.isolation_mode
+        bridge.approval_isolated = self.isolation_mode in {"token", "token+external_uid"}
         return self
 
     def close(self):
@@ -178,7 +188,16 @@ class ApprovalEndpoint:
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
-        self._remove_socket()
+        self._cleanup_paths()
+
+    def _cleanup_paths(self):
+        try:
+            if self._directory_grant_pending:
+                revoke_approver_directory_access(self.path.parent, self.required_uid,
+                                                 runner=self.acl_runner)
+                self._directory_grant_pending = False
+        finally:
+            self._remove_socket()
 
     def _remove_socket(self):
         identity, self._socket_identity = self._socket_identity, None
@@ -225,6 +244,8 @@ def approval_request(path: str, action: str, approval_id: str | None = None,
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(timeout)
             conn.connect(str(target))
+            if hosted and peer_credential_uid(conn) != owner:
+                return fail("approval_service_peer_not_trusted")
             with conn.makefile("rwb") as stream:
                 write_message(stream, message)
                 data = stream.readline(MAX_REPLY + 1)

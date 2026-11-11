@@ -1,10 +1,9 @@
 """OS-level grants for an externally hosted approval endpoint.
 
-The service account keeps its private 0700 directory and 0600 Unix socket.
-A trusted operator grants exactly one named approver UID directory search
-and socket read/write through filesystem ACLs, and the approval endpoint
-still checks the peer UID on every connection. Nothing here grants access to
-everyone, changes POSIX modes, or replaces the per-operation approval token.
+The service account keeps a dedicated 0700 directory and 0600 Unix socket.
+The directory access needed by macOS includes rights to change its entries,
+so it must contain only the approval socket. The endpoint checks the peer UID
+on every connection, in addition to the per-operation approval token.
 """
 from __future__ import annotations
 
@@ -66,8 +65,8 @@ def grant_approver_access(directory: Path, socket_path: Path, approver_uid: int,
         return {"ok": False, "supported": False, "error": "acl_platform_unsupported"}
     name = account_name(approver_uid)
     commands = [
-        ["chmod", "+a", f"user:{name} allow {DIRECTORY_GRANTS}", str(directory)],
         ["chmod", "+a", f"user:{name} allow {SOCKET_GRANTS}", str(socket_path)],
+        ["chmod", "+a", f"user:{name} allow {DIRECTORY_GRANTS}", str(directory)],
     ]
     steps = []
     for command in commands:
@@ -86,17 +85,48 @@ def describe_acl(path: Path, *, runner: Any = None) -> str:
     """Return the platform's ACL listing for verification and evidence."""
     if not platform_supported():
         return ""
-    return _invoke(["ls", "-lde", str(path)], runner).stdout or ""
+    result = _invoke(["ls", "-lde", str(path)], runner)
+    if result.returncode != 0:
+        raise PermissionError(f"Cannot inspect the ACL for {path}")
+    return result.stdout or ""
+
+
+def _acl_entries(path: Path, runner: Any) -> list[str]:
+    return re.findall(r"^\s*\d+:\s+(.+)$", describe_acl(path, runner=runner), re.MULTILINE)
+
+
+def require_dedicated_directory(directory: Path, *, runner: Any = None) -> None:
+    if not platform_supported():
+        raise PermissionError("Hosted approval ACLs require macOS.")
+    if next(directory.iterdir(), None) is not None:
+        raise PermissionError("Hosted approval requires a dedicated empty socket directory.")
+    if _acl_entries(directory, runner):
+        raise PermissionError("Hosted approval requires a socket directory without existing ACLs.")
+
+
+def revoke_approver_directory_access(directory: Path, approver_uid: int,
+                                     *, runner: Any = None) -> None:
+    """Revoke the directory grant, including after a partially failed startup."""
+    name = account_name(approver_uid)
+    result = _invoke(["chmod", "-a", f"user:{name} allow {DIRECTORY_GRANTS}",
+                      str(directory)], runner)
+    if result.returncode != 0 and _acl_entries(directory, runner):
+        raise PermissionError(f"Cannot remove the hosted approval ACL from {directory}")
 
 
 def verify_acl(path: Path, approver_uid: int, *, runner: Any = None) -> dict:
-    """Confirm a named allow ACE exists for exactly this approver UID."""
+    """Check whether the ACL listing includes an allow entry for the approver."""
     if not platform_supported():
         return {"ok": False, "supported": False, "error": "acl_platform_unsupported"}
     text = describe_acl(path, runner=runner)
     name = account_name(approver_uid)
-    pattern = rf"user:({re.escape(name)}|{int(approver_uid)})\s+allow"
-    found = re.search(pattern, text) is not None
+    principals = set(re.findall(r"^\s*\d+:\s+(\S+)\s+allow\s", text, re.MULTILINE))
+    found = bool(principals & {f"user:{name}", f"user:{int(approver_uid)}"})
+    if not found and any(re.fullmatch(r"[\da-fA-F-]{36}", p) for p in principals):
+        # macOS can print a principal's UUID when the display name is unavailable.
+        uuid = _invoke(["/usr/bin/dsmemberutil", "getuuid", "-U", name], runner)
+        found = uuid.returncode == 0 and uuid.stdout.strip().lower() in {
+            principal.lower() for principal in principals}
     return {"ok": found, "supported": True, "approver_uid": int(approver_uid),
             "entry_found": found, "listing": text.strip()[:500],
             "error": None if found else "acl_entry_missing"}
@@ -105,8 +135,8 @@ def verify_acl(path: Path, approver_uid: int, *, runner: Any = None) -> dict:
 def verify_layout(directory: Path, socket_path: Path, *, service_uid: int) -> dict:
     """Check the hosted layout without trusting ACL claims from the client.
 
-    The socket and its parent must still be owned by the service account and
-    never world-writable. ACLs only add named access, they do not relax this.
+    The socket and its parent must be owned by the service account and keep
+    the private POSIX modes used by the hosted server.
     """
     try:
         parent = directory.lstat()
@@ -118,14 +148,14 @@ def verify_layout(directory: Path, socket_path: Path, *, service_uid: int) -> di
         problems.append("parent_not_directory")
     if parent.st_uid != int(service_uid):
         problems.append("parent_owner_mismatch")
-    if stat.S_IMODE(parent.st_mode) & 0o002:
-        problems.append("parent_world_writable")
+    if stat.S_IMODE(parent.st_mode) != 0o700:
+        problems.append("parent_mode_not_private")
     if not stat.S_ISSOCK(info.st_mode):
         problems.append("not_a_socket")
     if info.st_uid != int(service_uid):
         problems.append("socket_owner_mismatch")
-    if stat.S_IMODE(info.st_mode) & 0o002:
-        problems.append("socket_world_writable")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        problems.append("socket_mode_not_private")
     return {"ok": not problems, "problems": problems,
             "parent_mode": oct(stat.S_IMODE(parent.st_mode)),
             "socket_mode": oct(stat.S_IMODE(info.st_mode)),

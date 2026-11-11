@@ -105,13 +105,14 @@ class TaskGovernor:
             self._read_run = 0
             return None
 
-    def note_failure(self, action: str, kind: str, error: str | None = None) -> dict:
+    def note_failure(self, action: str, kind: str, error: str | None = None,
+                     *, allow_retry: bool = True) -> dict:
         with self._lock:
             self._failure_run = self._failure_run + 1 if self._last_failure == action else 1
             self._last_failure = action
             if kind == "critical":
                 return {"allowed": False, "reason": "submission_requires_manual_readback"}
-            if error in NO_RETRY_ERRORS:
+            if not allow_retry or error in NO_RETRY_ERRORS:
                 return {"allowed": False, "reason": "non_retryable_security_error"}
             if self._failure_run > self.max_retries:
                 return {"allowed": False, "reason": "retry_limit_reached",
@@ -137,8 +138,15 @@ class CoreAPI:
         self.governor = TaskGovernor(time_limit=time_limit, action_budget=action_budget,
                                      max_read_retries=max_read_retries,
                                      max_retries=max_retries, clock=clock)
-        self._paused = False
+        self._lock = threading.RLock()
+        self._pending_submissions = set(self.bridge.submissions.pending_operations())
         self._pause_reason: str | None = None
+        self._blocked_intents: set[str] = set()
+
+    def _write_pause_reason(self) -> str | None:
+        if self._pending_submissions:
+            return "submission_recovery_pending"
+        return self._pause_reason
 
     @staticmethod
     def _validate(action: str, args: Any) -> dict | None:
@@ -154,15 +162,16 @@ class CoreAPI:
         return None
 
     def status(self) -> dict:
-        task = {**self.governor.snapshot(), "paused": self._paused,
-                "pause_reason": self._pause_reason}
+        reason = self._write_pause_reason()
+        task = {**self.governor.snapshot(), "paused": reason is not None,
+                "pause_reason": reason, "pending_submissions": len(self._pending_submissions)}
         return {**self.bridge.status(), "task": task,
                 "submissions": self.bridge.submission_summary(),
                 "routing": self.router.policy()}
 
     def intent_capabilities(self) -> dict:
         """Channel A catalog; read-only and never invokes real App Intents."""
-        return self.router.capabilities()
+        return self.router.capabilities(self.bridge)
 
     def intent_run(self, capability: str) -> dict:
         """Run one published side-effect-free intent with a fresh readback."""
@@ -214,18 +223,28 @@ class CoreAPI:
         return (isinstance(observed.get("messages"), list)
                 and bool(observed.get("screen") or observed.get("app")))
 
-    def resume_after_readback(self) -> dict:
-        """Trusted-side only. Resume writes after one confirmed fresh readback."""
-        try:
-            observed = self.bridge.inspect()
-        except Exception:
-            observed = fail("verification_failed")
-        if not self._fresh_evidence(observed):
-            return fail("readback_not_confirmed")
-        self._paused = False
-        self._pause_reason = None
-        self.governor.note_success()
-        return {"ok": True, "resumed": True}
+    def resume_after_readback(self, op_id: str | None = None) -> dict:
+        """Trusted-side only. A pending submission needs operation-specific evidence."""
+        with self._lock:
+            if op_id is None and self._pending_submissions:
+                return fail("submission_operation_id_required")
+            try:
+                observed = self.bridge.inspect()
+            except Exception:
+                observed = fail("verification_failed")
+            if not self._fresh_evidence(observed):
+                return fail("readback_not_confirmed")
+            if op_id is not None:
+                result = self.bridge.submissions.reconcile(op_id, observed)
+                if not result.get("ok"):
+                    return result
+                self._pending_submissions.discard(op_id)
+            else:
+                result = {"ok": True}
+                self._pause_reason = None
+                self._blocked_intents.clear()
+            self.governor.note_success()
+            return {**result, "resumed": self._write_pause_reason() is None}
 
     def _verify(self) -> dict:
         """Read back after a state change; never automatically replay a submission."""
@@ -240,6 +259,10 @@ class CoreAPI:
                 "observation_error": observed.get("error") if isinstance(observed, dict) else None}
 
     def dispatch(self, action: str, args: dict | None = None) -> dict:
+        with self._lock:
+            return self._dispatch(action, args)
+
+    def _dispatch(self, action: str, args: dict | None) -> dict:
         args = {} if args is None else args
         spec = ACTION_SPECS.get(action)
         if spec is None:
@@ -248,8 +271,11 @@ class CoreAPI:
         if problem:
             return problem
         method, fields, kind = spec
-        if self._paused and kind != "read":
-            return fail("paused_pending_readback", reason=self._pause_reason)
+        pause_reason = self._write_pause_reason()
+        if (pause_reason and kind != "read"
+                or action == "intent_run" and args["capability"] in self._blocked_intents):
+            return fail("paused_pending_readback", reason=pause_reason,
+                        retry={"allowed": False})
         problem = self.governor.check(action, kind)
         if problem:
             return problem
@@ -264,14 +290,17 @@ class CoreAPI:
         if not isinstance(result, dict):
             result = fail("invalid_driver_result")
         if not result.get("ok"):
-            # A failed submission can still carry pause=True (lost receipt,
-            # unconfirmed record). That must be a real pause, not just a field
-            # in the response, otherwise the next write would go through.
-            if result.get("pause"):
-                self._paused = True
+            if kind == "critical":
+                self._pending_submissions.update(self.bridge.submissions.pending_operations())
+            if result.get("pause") and not (kind == "critical"
+                                           and args["approval_id"] in self._pending_submissions):
                 self._pause_reason = result.get("error") or "submission_receipt_lost"
+                if action == "intent_run":
+                    self._blocked_intents.add(args["capability"])
+            routing = result.get("routing", {})
             return {**result, "retry": self.governor.note_failure(
-                action, kind, result.get("error"))}
+                action, kind, result.get("error"),
+                allow_retry=not result.get("pause") and routing.get("automatic_retry") is not False)}
         self.governor.note_success()
         if kind == "read":
             return result
@@ -291,7 +320,6 @@ class CoreAPI:
                                 "outcome": "unclear", "pause": True,
                                 "automatic_retry": False}
         if verification.get("pause"):
-            self._paused = True
             self._pause_reason = (verification.get("observation_error")
                                   or ("submission_bypass_detected"
                                       if verification.get("submission_bypass_detected")
