@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Real cross-UID approval acceptance for the externally hosted endpoint.
 
-Needs a host where ``sudo -n -u <approver>`` works without a password. When
-it does not, this script records the blocker and reports ``outcome=blocked``;
-it never reports an injected peer-credential result as a real cross-UID
-process. Run it on site after sudo credentials are available.
+Two launch modes:
+
+* default: uses ``sudo -n -u <approver>`` for each approval call. Works only
+  where non-interactive sudo is already authorized.
+* ``--authenticate``: launches ONE interactive ``sudo -u <approver>`` agent
+  (sudo may prompt once on the terminal), then sends every approval request
+  over a private local socket. This does not depend on sudo ticket sharing
+  between the parent and its child processes.
+
+When neither path is available the script reports ``outcome=blocked``; it never
+reports an injected peer-credential result as a real cross-UID process.
 """
 from __future__ import annotations
 
@@ -13,6 +20,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -26,35 +34,59 @@ if str(ROOT) not in sys.path:
 from phonebridge.approvals import ApprovalEndpoint, approval_request
 from phonebridge.core import PhoneBridge
 from phonebridge.hosted import account_name, platform_supported, verify_acl, verify_layout
+from phonebridge.mcp import read_message, write_message
 
 CHILD = r'''#!/usr/bin/env python3
-"""Runs as the approver UID; reads the token from a file, never from argv."""
+"""Runs as the approver UID. Token comes from a file, never from argv."""
 import argparse
 import json
+import socket
 import sys
 from pathlib import Path
 
 p = argparse.ArgumentParser()
-p.add_argument("--socket", required=True)
+p.add_argument("--socket", required=True)          # hosted approval socket
 p.add_argument("--shared", required=True)
 p.add_argument("--service-uid", type=int, required=True)
-p.add_argument("--action", required=True)
+p.add_argument("--action", default="")
 p.add_argument("--approval-id", default="")
 p.add_argument("--with-token", action="store_true")
+p.add_argument("--control-socket", default="")
 a = p.parse_args()
 sys.path.insert(0, a.shared)
 from phonebridge.approvals import approval_request
+from phonebridge.mcp import read_message, write_message
 
-token = None
-if a.with_token:
-    token = (Path(a.shared) / "token").read_text(encoding="utf-8").strip()
-try:
-    result = approval_request(a.socket, a.action, a.approval_id or None,
-                              token=token, hosted=True,
-                              socket_owner_uid=a.service_uid)
-except Exception as exc:
-    result = {"ok": False, "error": type(exc).__name__}
-print(json.dumps(result, ensure_ascii=False))
+
+def handle(req):
+    token = None
+    if req.get("with_token"):
+        token = (Path(a.shared) / "token").read_text(encoding="utf-8").strip()
+    try:
+        return approval_request(a.socket, req["action"],
+                                req.get("approval_id") or None,
+                                token=token, hosted=True,
+                                socket_owner_uid=a.service_uid)
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
+if a.control_socket:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.connect(a.control_socket)
+        stream = conn.makefile("rwb")
+        while True:
+            try:
+                req = read_message(stream)
+            except (EOFError, OSError, ValueError):
+                break
+            try:
+                write_message(stream, handle(req))
+            except OSError:
+                break
+else:
+    print(json.dumps(handle({"action": a.action, "approval_id": a.approval_id,
+                             "with_token": a.with_token}), ensure_ascii=False))
 '''
 
 
@@ -95,6 +127,93 @@ def run_as_approver(approver: str, command: list[str], *, runner=None) -> dict:
         return {"ok": False, "error": "invalid_child_output"}
 
 
+class ApproverSession:
+    """One interactive sudo launch, then many requests over a private socket.
+
+    The listener socket is created by the service account and given a named
+    ACL for exactly one approver UID. sudo inherits the terminal so it can
+    prompt once; after that no further sudo invocation is needed.
+    """
+
+    def __init__(self, *, approver: str, python: str, child: Path,
+                 control_socket: Path, shared: Path, service_uid: int,
+                 approval_socket: Path, approver_uid: int):
+        self.launch_command = [
+            "sudo", "-u", approver, python, str(child),
+            "--socket", str(approval_socket),
+            "--shared", str(shared),
+            "--service-uid", str(service_uid),
+            "--control-socket", str(control_socket),
+        ]
+        self.control_socket = control_socket
+        self.approver_uid = approver_uid
+        self.listener = None
+        self.process = None
+        self.connection = None
+        self.stream = None
+
+    def start(self):
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(self.control_socket))
+        self.listener.listen(1)
+        self.control_socket.chmod(0o600)
+        grant = subprocess.run(
+            ["chmod", "+a",
+             f"user:{account_name(self.approver_uid)} allow read,write",
+             str(self.control_socket)],
+            capture_output=True, text=True, timeout=10)
+        if grant.returncode != 0:
+            raise RuntimeError("control socket ACL grant failed")
+        import time
+        self.listener.settimeout(2)
+        # stdin/stdout/stderr are inherited so sudo can prompt once on the tty.
+        self.process = subprocess.Popen(self.launch_command)
+        deadline = time.monotonic() + 60
+        while True:
+            if self.process.poll() is not None:
+                raise RuntimeError("approver agent exited before connecting")
+            if time.monotonic() > deadline:
+                raise RuntimeError("approver agent did not connect in time")
+            try:
+                self.connection, _ = self.listener.accept()
+                break
+            except socket.timeout:
+                continue
+        self.stream = self.connection.makefile("rwb")
+
+    def request(self, action: str, approval_id: str = "", with_token: bool = True) -> dict:
+        write_message(self.stream, {"action": action,
+                                    "approval_id": approval_id,
+                                    "with_token": with_token})
+        return read_message(self.stream)
+
+    def close(self):
+        for resource in (self.stream, self.connection, self.listener):
+            try:
+                if resource is not None:
+                    resource.close()
+            except Exception:
+                pass
+        if self.process is not None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except Exception:
+                try:
+                    self.process.kill()
+                except Exception:
+                    pass
+        try:
+            self.control_socket.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def on_site_command(approver: str) -> str:
+    return (f"cd {ROOT} && python3 scripts/cross-uid-approval-spike.py "
+            f"--approver {approver} --authenticate")
+
+
 def blocker_evidence(approver: str, probe: dict) -> dict:
     return {"outcome": "blocked",
             "cross_uid_process_verified": False,
@@ -102,13 +221,12 @@ def blocker_evidence(approver: str, probe: dict) -> dict:
             "approver": approver,
             "blocker": probe.get("error"),
             "blocker_detail": probe.get("detail"),
-            "on_site_command": (
-                f"cd {ROOT} && sudo -v && "
-                f"python3 scripts/cross-uid-approval-spike.py --approver {approver}"),
+            "on_site_command": on_site_command(approver),
             "checks": {}, "check_count": 0,
             "note": ("Real named ACLs were verified separately by "
                      "scripts/hosted-approval-spike.py; this blocker only "
-                     "concerns running the approval client as another UID.")}
+                     "concerns running the approval client as another UID. "
+                     "Use --authenticate for one interactive sudo prompt.")}
 
 
 def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
@@ -118,10 +236,12 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approver", default="nobody", help="Second OS account used for approval")
     parser.add_argument("--probe-only", action="store_true", help="Only check non-interactive sudo")
+    parser.add_argument("--authenticate", action="store_true",
+                        help="Launch one interactive sudo agent; may prompt once for a password")
     args = parser.parse_args(argv)
 
-    probe = probe_sudo(args.approver, runner=runner)
     if args.probe_only:
+        probe = probe_sudo(args.approver, runner=runner)
         print(json.dumps({"sudo_non_interactive_available": probe["ok"],
                           "approver": args.approver, **probe}, ensure_ascii=False, indent=2))
         return 0
@@ -132,15 +252,16 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
             "blocker": "script_must_not_run_as_root",
             "detail": ("Launching the whole spike with sudo makes the MCP service "
                        "run as root, which is not the intended two-unprivileged-account "
-                       "acceptance condition. Only the inner sudo -n -u <approver> "
-                       "needs credentials."),
-            "on_site_command": (
-                f"cd {ROOT} && sudo -v && "
-                f"python3 scripts/cross-uid-approval-spike.py --approver {args.approver}"),
+                       "acceptance condition. Only the approver agent may use sudo."),
+            "on_site_command": on_site_command(args.approver),
             "checks": {}, "check_count": 0,
         }, ensure_ascii=False, indent=2))
         return 0
-    if not probe["ok"]:
+
+    use_session = bool(args.authenticate and runner is None)
+    probe = ({"ok": True, "reported_uid": "interactive"} if use_session
+             else probe_sudo(args.approver, runner=runner))
+    if not use_session and not probe["ok"]:
         print(json.dumps(blocker_evidence(args.approver, probe), ensure_ascii=False, indent=2))
         return 0
     if not platform_supported():
@@ -153,10 +274,12 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
     service_uid = os.getuid()
     shared = Path(tempfile.mkdtemp(prefix="pb-crossuid-"))
     endpoint = None
+    session = None
     checks: dict[str, bool] = {}
     evidence: dict = {"approver": args.approver,
                       "approver_uid": int(approver_uid),
                       "service_uid": service_uid,
+                      "authenticate_mode": bool(args.authenticate),
                       "approver_process_real": runner is None,
                       "real_model_calls": False}
     try:
@@ -192,7 +315,45 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         bridge.type_text("hello")
         op = bridge.prepare_message("contact-01", "hello")["approval_id"]
 
-        checks["sudo_non_interactive_available"] = probe["ok"]
+        if use_session:
+            session = ApproverSession(
+                approver=args.approver, python=sys.executable, child=child,
+                control_socket=shared / "agent.sock", shared=shared,
+                service_uid=service_uid, approval_socket=socket_path,
+                approver_uid=int(approver_uid))
+            try:
+                session.start()
+            except Exception as exc:
+                print(json.dumps({
+                    "outcome": "blocked",
+                    "cross_uid_process_verified": False,
+                    "approver_process_real": False,
+                    "blocker": "approver_agent_unavailable",
+                    "blocker_detail": f"{type(exc).__name__}: {exc}",
+                    "on_site_command": on_site_command(args.approver),
+                    "checks": checks, "check_count": len(checks),
+                }, ensure_ascii=False, indent=2))
+                return 0
+
+        def build_command(action, op_id, with_token):
+            return build_child_command(
+                sys.executable, child, socket_path=socket_path, shared=shared,
+                service_uid=service_uid, action=action, approval_id=op_id,
+                with_token=with_token)
+
+        if session is not None:
+            def call_approver(action, op_id, with_token):
+                return session.request(action, op_id, with_token)
+            launch_command = session.launch_command
+        else:
+            def call_approver(action, op_id, with_token):
+                return run_as_approver(args.approver,
+                                       build_command(action, op_id, with_token),
+                                       runner=runner)
+            launch_command = build_command("approve", op, True)
+
+        checks["approver_process_available"] = bool(
+            session is not None or probe["ok"])
         checks["directory_acl_entry_verified"] = bool(
             verify_acl(service_dir, int(approver_uid))["ok"])
         checks["socket_acl_entry_verified"] = bool(
@@ -203,12 +364,9 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
             and stat.S_IMODE(socket_path.lstat().st_mode) == 0o600)
         checks["hosted_isolation_disclosed"] = (
             endpoint.isolation_mode == "token+external_uid")
+        checks["token_not_in_child_command"] = token not in json.dumps(launch_command)
 
-        command = build_child_command(sys.executable, child, socket_path=socket_path,
-                                      shared=shared, service_uid=service_uid,
-                                      action="approve", approval_id=op, with_token=True)
-        checks["token_not_in_child_command"] = token not in json.dumps(command)
-        approved = run_as_approver(args.approver, command, runner=runner)
+        approved = call_approver("approve", op, True)
         if rehearsal_hook is not None:
             rehearsal_hook(bridge, "approve", op)
         checks["real_peer_uid_accepted"] = bool(approved.get("approved") or approved.get("ok"))
@@ -218,14 +376,11 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         checks["one_attributed_record"] = bool(
             executed.get("virtual_message_added") and len(bridge.inspect()["messages"]) == 1)
 
-        replay = run_as_approver(args.approver, command, runner=runner)
+        replay = call_approver("approve", op, True)
         checks["cross_uid_replay_rejected"] = not replay.get("ok", False)
         evidence["approver_replay_response"] = replay
 
-        no_token_command = build_child_command(
-            sys.executable, child, socket_path=socket_path, shared=shared,
-            service_uid=service_uid, action="list", approval_id="", with_token=False)
-        no_token = run_as_approver(args.approver, no_token_command, runner=runner)
+        no_token = call_approver("list", "", False)
         checks["missing_token_rejected_by_real_peer"] = (
             no_token.get("error") == "approval_token_required")
 
@@ -238,6 +393,7 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         evidence["outcome"] = "passed" if all(checks.values()) else "failed"
         evidence["cross_uid_process_verified"] = bool(
             runner is None and all(checks.values()))
+        evidence["on_site_command"] = on_site_command(args.approver)
         print(json.dumps(evidence, ensure_ascii=False, indent=2))
         return 0 if all(checks.values()) else 1
     except Exception as exc:
@@ -247,6 +403,11 @@ def main(argv=None, *, runner=None, rehearsal_hook=None) -> int:
         print(json.dumps(evidence, ensure_ascii=False, indent=2))
         return 1
     finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
         if endpoint is not None:
             try:
                 endpoint.close()

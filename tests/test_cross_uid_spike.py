@@ -49,7 +49,7 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertFalse(payload["cross_uid_process_verified"])
         self.assertEqual(payload["blocker"], "sudo_non_interactive_unavailable")
         self.assertIn("cross-uid-approval-spike.py", payload["on_site_command"])
-        self.assertIn("sudo -v &&", payload["on_site_command"])
+        self.assertIn("--authenticate", payload["on_site_command"])
         self.assertIn(str(ROOT), payload["on_site_command"])
         self.assertEqual(payload["check_count"], 0)
 
@@ -110,8 +110,24 @@ class CrossUIDSpikeTests(unittest.TestCase):
         self.assertEqual(payload["outcome"], "blocked")
         self.assertEqual(payload["blocker"], "script_must_not_run_as_root")
         self.assertFalse(payload["cross_uid_process_verified"])
-        self.assertIn("sudo -v &&", payload["on_site_command"])
+        self.assertIn("--authenticate", payload["on_site_command"])
         self.assertIn(str(ROOT), payload["on_site_command"])
+
+    def test_authenticated_session_launches_one_agent_without_token(self):
+        session = spike.ApproverSession(
+            approver="nobody", python=sys.executable,
+            child=ROOT / "scripts" / "child.py",
+            control_socket=ROOT / "agent.sock", shared=ROOT,
+            service_uid=os.getuid(),
+            approval_socket=ROOT / "service" / "approval.sock",
+            approver_uid=4294967294)
+        command = session.launch_command
+        self.assertEqual(command[:3], ["sudo", "-u", "nobody"])
+        self.assertNotIn("-n", command)
+        self.assertIn("--control-socket", command)
+        self.assertIn("--socket", command)
+        self.assertNotIn("super-secret-token", json.dumps(command))
+        self.assertIn("--authenticate", spike.on_site_command("nobody"))
 
 
 if __name__ == "__main__":
