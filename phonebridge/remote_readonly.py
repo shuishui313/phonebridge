@@ -23,7 +23,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 
 TOOLS = ("phone_status", "intent_run", "phone_inspect")
@@ -35,12 +35,28 @@ SYNTHETIC_CONTACTS = (
     {"id": "alex-01", "name": "Alex"},
     {"id": "alex-02", "name": "Alex"},
 )
-QUERY_TOKEN_KEYS = frozenset({"token", "access_token", "auth", "authorization"})
 AUTH_BODY = b"unauthorized\n"
 ORIGIN_BODY = b"origin_rejected\n"
 SIZE_BODY = b"payload_too_large\n"
 RATE_BODY = b"rate_limited\n"
+BAD_BODY = b"bad_request\n"
+LENGTH_BODY = b"length_required\n"
+UNAVAILABLE_BODY = b"unavailable\n"
 PROTOCOL = "2025-06-18"
+_AUDIT_TOOLS = frozenset({
+    "auth", "rate_limit", "initialize", "initialized", "tools/list",
+    "phone_status", "intent_run", "phone_inspect", "unknown_tool",
+})
+_AUDIT_RESULTS = frozenset({
+    "ok", "missing_token", "bad_token", "expired_token", "token_in_query",
+    "rejected", "invalid_parameters", "intent_not_allowed", "unknown_tool",
+})
+
+
+def _valid_allowed_host(value: str) -> bool:
+    if not value or len(value) > 255:
+        return False
+    return not any(ch in value for ch in " \t\r\n\x00/@\\#?")
 
 
 def _project_contacts(contacts) -> list[dict[str, str]]:
@@ -51,8 +67,49 @@ def _project_contacts(contacts) -> list[dict[str, str]]:
 
 
 def take_token(env_name: str) -> str:
-    """Read the bearer secret once and drop it from the process environment."""
+    """Read the bearer secret once and drop it from this process's environment.
+
+    Child processes started afterwards do not inherit it. macOS process
+    listings can still show the original environment block from process
+    start; prefer ``take_token_file`` when that matters.
+    """
     return os.environ.pop(env_name, "")
+
+
+def take_token_file(path: str) -> str:
+    """Read one token from a private regular file, then shred and unlink it."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ValueError("token file is unavailable") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+            raise ValueError("token file must be a private regular file")
+        if info.st_size < 1 or info.st_size > 256:
+            raise ValueError("token file must be a private regular file")
+        parent = Path(path).parent
+        if stat.S_IMODE(parent.stat().st_mode) & 0o077:
+            raise ValueError("token file must be a private regular file")
+        data = os.read(fd, 256)
+    finally:
+        os.close(fd)
+    try:
+        token = data.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("token file must be a private regular file") from exc
+    if token.endswith("\n"):
+        token = token[:-1]
+    if any(ch in token for ch in "\r\n\x00") or not token:
+        raise ValueError("token file must be a private regular file")
+    shred = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        os.write(shred, b"\0" * info.st_size)
+        os.fsync(shred)
+    finally:
+        os.close(shred)
+    os.unlink(path)
+    return token
 
 
 def prepare_audit(path: str) -> None:
@@ -83,12 +140,14 @@ class RemoteReadOnlyApp:
     def __init__(self, token: str, expires_at: float, audit_path: str, *,
                  max_body: int = 8192, rate_limit: int = 30,
                  rate_window_seconds: float = 60.0, clock=None,
-                 allowed_hosts: frozenset[str] | None = None):
+                 allowed_hosts: frozenset[str] | None = None,
+                 max_sessions: int = 32):
         if not isinstance(token, str) or not token or any(ch in token for ch in "\r\n\x00"):
             raise ValueError("remote token must be a single non-empty line")
         if not math.isfinite(float(expires_at)):
             raise ValueError("expiry must be finite")
-        if max_body < 1 or rate_limit < 1 or not math.isfinite(rate_window_seconds) or rate_window_seconds <= 0:
+        if (max_body < 1 or rate_limit < 1 or max_sessions < 1
+                or not math.isfinite(rate_window_seconds) or rate_window_seconds <= 0):
             raise ValueError("limits must be positive")
         prepare_audit(audit_path)
         self._salt = secrets.token_bytes(32)
@@ -104,6 +163,7 @@ class RemoteReadOnlyApp:
         self.clock = clock or time.time
         self.contacts = [dict(item) for item in SYNTHETIC_CONTACTS]
         self.allowed_hosts = frozenset(allowed_hosts or ())
+        self.max_sessions = int(max_sessions)
         self._sessions: dict[str, ReadOnlySession] = {}
         self._hits: deque[float] = deque()
         self._lock = threading.Lock()
@@ -113,6 +173,10 @@ class RemoteReadOnlyApp:
         self._port = int(port)
 
     def audit(self, tool: str, result: str) -> None:
+        if tool not in _AUDIT_TOOLS:
+            tool = "unknown_tool"
+        if result not in _AUDIT_RESULTS:
+            result = "rejected"
         record = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.clock())),
                   "tool": tool, "result": result}
         line = json.dumps(record, ensure_ascii=True, sort_keys=True) + "\n"
@@ -154,11 +218,13 @@ class RemoteReadOnlyApp:
         allowed = {f"http://127.0.0.1:{self._port}", f"http://localhost:{self._port}"}
         return origin in allowed
 
-    def open_session(self) -> str:
-        session_id = secrets.token_hex(16)
+    def open_session(self) -> str | None:
         with self._lock:
+            if len(self._sessions) >= self.max_sessions:
+                return None
+            session_id = secrets.token_hex(16)
             self._sessions[session_id] = ReadOnlySession()
-        return session_id
+            return session_id
 
     def session(self, session_id: str | None) -> ReadOnlySession | None:
         if not session_id:
@@ -186,7 +252,7 @@ class RemoteReadOnlyApp:
         if set(arguments) != {"capability"} or not isinstance(capability, str):
             return {"ok": False, "error": "invalid_parameters"}
         if capability != ALLOWED_INTENT:
-            return {"ok": False, "error": "intent_not_allowed", "capability": capability}
+            return {"ok": False, "error": "intent_not_allowed"}
         return {"ok": True, "capability": ALLOWED_INTENT, "channel": "A",
                 "result": {"contacts": _project_contacts(self.contacts)}}
 
@@ -210,6 +276,16 @@ class _Handler(BaseHTTPRequestHandler):
     def version_string(self) -> str:
         return self.server_version
 
+    def setup(self) -> None:
+        self.timeout = getattr(self.server, "request_timeout", 5)
+        super().setup()
+
+    def send_error(self, code, message=None, explain=None) -> None:  # noqa: ARG002
+        self.close_connection = True
+        status = 405 if int(code) in (405, 501) else 400
+        body = b"method_not_allowed\n" if status == 405 else BAD_BODY
+        self._send(status, body, "text/plain; charset=utf-8")
+
     def date_time_string(self, timestamp: float | None = None) -> str:
         return "Thu, 01 Jan 2026 00:00:00 GMT"
 
@@ -228,17 +304,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _content_length(self, app: RemoteReadOnlyApp) -> int | None:
-        length = self.headers.get("Content-Length")
-        if length is None:
-            return 0
-        try:
-            size = int(length)
-        except ValueError:
-            return None
-        if size < 0:
-            return None
-        return size
+    def _framing(self, app: RemoteReadOnlyApp) -> tuple[int, bytes] | None:
+        """Return a status and static body when the framing is not acceptable."""
+        if self.headers.get_all("Transfer-Encoding"):
+            return 400, BAD_BODY
+        lengths = self.headers.get_all("Content-Length")
+        if not lengths:
+            return 411, LENGTH_BODY
+        if len(lengths) != 1 or not lengths[0].isdigit() or len(lengths[0]) > 8:
+            return 400, BAD_BODY
+        if len(lengths[0]) > 1 and lengths[0].startswith("0"):
+            return 400, BAD_BODY
+        size = int(lengths[0])
+        if size > app.max_body:
+            return 413, SIZE_BODY
+        return None
 
     def _reject_method(self) -> None:
         self.close_connection = True
@@ -254,13 +334,13 @@ class _Handler(BaseHTTPRequestHandler):
         if parts.path != "/mcp":
             self._send(404, b"not_found\n", "text/plain; charset=utf-8")
             return
-        size = self._content_length(app)
-        if size is None or size > app.max_body:
-            self._send(413, SIZE_BODY, "text/plain; charset=utf-8")
+        framing = self._framing(app)
+        if framing is not None:
+            self._send(framing[0], framing[1], "text/plain; charset=utf-8")
             return
+        size = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(size) if size else b""
-        query = parse_qs(parts.query, keep_blank_values=True)
-        if any(key.lower() in QUERY_TOKEN_KEYS for key in query):
+        if parts.query:
             self._unauthorized("token_in_query")
             return
         origin = self.headers.get("Origin")
@@ -285,8 +365,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             message = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            self._send(400, b"bad_request\n", "text/plain; charset=utf-8")
+        except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError):
+            self._send(400, BAD_BODY, "text/plain; charset=utf-8")
             return
         self._dispatch(app, message)
 
@@ -302,6 +382,9 @@ class _Handler(BaseHTTPRequestHandler):
         session_header = self.headers.get("Mcp-Session-Id")
         if method == "initialize":
             session_id = app.open_session()
+            if session_id is None:
+                self._send(503, UNAVAILABLE_BODY, "text/plain; charset=utf-8")
+                return
             body = {"jsonrpc": "2.0", "id": message.get("id"), "result": {
                 "protocolVersion": PROTOCOL,
                 "capabilities": {"tools": {"listChanged": False}},
@@ -378,12 +461,58 @@ def _json_bytes(value: dict) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True).encode("ascii")
 
 
+class _BoundedHTTPServer(ThreadingHTTPServer):
+    """Threading server with a fixed number of in-flight requests."""
+
+    def process_request(self, request, client_address) -> None:  # noqa: ANN001
+        inflight = self.inflight  # type: ignore[attr-defined]
+        if not inflight.acquire(blocking=False):
+            _send_busy(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            inflight.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:  # noqa: ANN001
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.inflight.release()  # type: ignore[attr-defined]
+
+    def handle_error(self, request, client_address) -> None:  # noqa: ANN001, ARG002
+        return
+
+
+def _send_busy(request) -> None:  # noqa: ANN001
+    try:
+        request.settimeout(1)
+        request.sendall(
+            b"HTTP/1.1 429 Too Many Requests\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Length: 13\r\n"
+            b"Connection: close\r\n"
+            b"Cache-Control: no-store\r\n"
+            b"\r\n"
+            b"rate_limited\n")
+    except OSError:
+        pass
+    finally:
+        request.close()
+
+
 class RemoteReadOnlyServer:
     """127.0.0.1 HTTP server. The public constructor refuses other hosts."""
 
-    def __init__(self, app: RemoteReadOnlyApp, port: int = 0):
+    def __init__(self, app: RemoteReadOnlyApp, port: int = 0, *,
+                 request_timeout: float = 5.0, max_inflight: int = 8):
+        if request_timeout <= 0 or max_inflight < 1:
+            raise ValueError("limits must be positive")
         self.app = app
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", int(port)), _Handler)
+        self._httpd = _BoundedHTTPServer(("127.0.0.1", int(port)), _Handler)
+        self._httpd.inflight = threading.BoundedSemaphore(int(max_inflight))  # type: ignore[attr-defined]
+        self._httpd.request_timeout = float(request_timeout)  # type: ignore[attr-defined]
         self._httpd.app = app  # type: ignore[attr-defined]
         host, bound = self._httpd.server_address[:2]
         if host != "127.0.0.1":
@@ -408,7 +537,9 @@ class RemoteReadOnlyServer:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonebridge-remote-readonly")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--token-env", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--token-env")
+    source.add_argument("--token-file")
     parser.add_argument("--token-ttl-seconds", type=float, required=True)
     parser.add_argument("--audit-path", required=True)
     parser.add_argument("--max-body", type=int, default=8192)
@@ -417,7 +548,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allowed-host", action="append", default=[],
                         help="Extra Host header allowed only after a separate tunnel review")
     args = parser.parse_args(argv)
-    token = take_token(args.token_env)
+    if args.token_file:
+        try:
+            token = take_token_file(args.token_file)
+        except (OSError, ValueError):
+            print("remote readonly MCP refused to start", file=sys.stderr)
+            return 2
+    else:
+        token = take_token(args.token_env)
+    if any(not _valid_allowed_host(host) for host in args.allowed_host):
+        print("remote readonly MCP refused to start", file=sys.stderr)
+        return 2
     if (not math.isfinite(args.token_ttl_seconds) or args.token_ttl_seconds <= 0
             or not math.isfinite(args.rate_window_seconds) or args.rate_window_seconds <= 0):
         print("remote readonly MCP refused to start", file=sys.stderr)

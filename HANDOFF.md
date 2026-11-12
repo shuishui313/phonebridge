@@ -6,7 +6,7 @@
 
 **更正：** 不能再让用户去 Hark 设置里打开本机的桌面控制程序，或把 `codex exec` 粘进 Hark 做本机执行。当时看到的列表是本机已安装的应用，不是 Hark 的设置项。Hark 的命令跑在它自己的云端沙箱；Mac 外壳目前只向沙箱开放定位这一项设备权限。那个桌面控制程序属于本机的编码工具，Hark 拿不到那份本机执行能力。
 
-**第 1 步已在本地完成：** `python3 -m phonebridge.remote_readonly` 是独立进程的 Streamable HTTP 只读 MCP。只绑定 `127.0.0.1`，不导入设备驱动、审批或提交代码，只注册三个工具，`intent_run` 只放行 `contacts.lookup`。令牌读入后从进程环境删除，只留 HMAC，请求只认 `Authorization: Bearer`。限流在鉴权之前。审计文件是 0600，目录必须已经是 0700。`Host` 默认只接受回环。没有开隧道，没有改系统设置。测试见 `tests/test_remote_readonly.py` 和 [测试报告](docs/test-report.md)。
+**第 1 步已在本地完成：** `python3 -m phonebridge.remote_readonly` 是独立进程的 Streamable HTTP 只读 MCP。只绑定 `127.0.0.1`，不导入设备驱动、审批或提交代码，只注册三个工具，`intent_run` 只放行 `contacts.lookup`。令牌优先从 0600 文件读入并随即销毁。限流在鉴权之前。审计文件是 0600，目录必须已经是 0700。`Host` 默认只接受回环。没有开隧道，没有改系统设置。开隧道前的对抗性实测见 [评审结论](docs/remote-readonly-security-review.md)。测试见 `tests/test_remote_readonly.py` 和 [测试报告](docs/test-report.md)。
 
 **另排，不在这个 PR：** 上一轮评审里还没做的几项留到后面：`--verify-evidence` 仍接受旧的跨 UID 证据（以后用代码版本和判据摘要，对不上就报证据过期）；设备标识和本地日志的清理；真实模型的措辞；CI 里的跳过测试；`resume_after_readback` 入口；确定性客户端打进生产包。这次只修远程只读这一条。主机侧 SSH 回环测试偶发竞态是原有问题，失败时照实记录，不算通过。
 

@@ -79,17 +79,19 @@ Hark 确认过：它的命令跑在自己的云端沙箱里。Mac 版外壳目�
 
 ### 第 1 步 · 本地回环只读 MCP（已实现）
 
-独立进程 `python3 -m phonebridge.remote_readonly`。这个入口没有 `--driver`，也不连接主后端的 Unix 套接字。模块本身不导入审批、提交或设备驱动；`python -m` 时包入口也不会顺带加载它们。合成联系人写在该模块里，只保留 `id` 和 `name`。它只注册 `phone_status`、`intent_run`、`phone_inspect`。`intent_run` 在服务端按能力 ID 白名单只放行 `contacts.lookup`。监听地址只能是 `127.0.0.1`。令牌从环境变量读入后从该进程的环境里删掉，只保留 HMAC。请求必须带 `Authorization: Bearer`，URL 参数里的令牌一律拒绝。缺失、错误、过期三种失败返回同一个 401 和同一段 `unauthorized`。限流在鉴权之前计数。真实原因只进审计日志，日志不写令牌。审计文件要放在已经是 0700 的目录里，服务只创建 0600 文件。`--token-ttl-seconds` 必须是有限且大于 0 的数。`Host` 默认只接受本进程的回环名；`Origin` 也只接受回环。出错的响应会关闭连接。这一步不开隧道、不对公网监听、不改系统设置。
+独立进程 `python3 -m phonebridge.remote_readonly`。这个入口没有 `--driver`，也不连接主后端的 Unix 套接字。模块本身不导入审批、提交或设备驱动；`python -m` 时包入口也不会顺带加载它们。合成联系人写在该模块里，只保留 `id` 和 `name`。它只注册 `phone_status`、`intent_run`、`phone_inspect`。`intent_run` 只接受完全等于 `contacts.lookup` 的能力 ID。监听地址只能是 `127.0.0.1`。令牌优先从 0600 文件读入，读完后把文件覆写为零并删除；`--token-env` 仍可用，但 macOS 的进程列表可能还看得到启动时的环境块。请求必须带 `Authorization: Bearer`。URL 上只要出现查询串就拒绝。缺失、错误、过期三种失败返回同一个 401 和同一段 `unauthorized`。限流在鉴权之前计数。审计只写固定的工具名和结果，不写调用方原文，也不写令牌。审计文件要放在已经是 0700 的目录里，服务只创建 0600 文件。`--token-ttl-seconds` 必须是有限且大于 0 的数。`Host` 默认只接受本进程的回环名；`Origin` 也只接受回环。带 `Transfer-Encoding`、重复的 `Content-Length`，或过深的 JSON，都直接拒绝。未完成的请求有读超时，同时在途的连接有上限。出错的响应会关闭连接，并且是纯文本。这一步不开隧道、不对公网监听、不改系统设置。
 
 ```sh
-export PB_REMOTE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-PB_AUDIT_DIR="$(mktemp -d /tmp/pb-remote-audit.XXXXXX)"
+PB_DIR="$(mktemp -d /tmp/pb-remote.XXXXXX)"
+PB_DIR="$PB_DIR" python3 -c 'import os, secrets; from pathlib import Path; p=Path(os.environ["PB_DIR"])/"token"; p.write_text(secrets.token_urlsafe(24)+"\n"); p.chmod(0o600)'
 python3 -m phonebridge.remote_readonly \
-  --port 8765 --token-env PB_REMOTE_TOKEN --token-ttl-seconds 600 \
-  --audit-path "$PB_AUDIT_DIR/audit.jsonl"
+  --port 8765 --token-file "$PB_DIR/token" --token-ttl-seconds 600 \
+  --audit-path "$PB_DIR/audit.jsonl"
 ```
 
-标准输出只有一行端口号，而且会立即刷出。令牌不要写进命令行，也不要写进仓库。父 shell 里的环境变量还在；服务进程自己的环境里已经没有。
+标准输出只有一行端口号，而且会立即刷出。令牌不要写进命令行，也不要写进仓库。上面的令牌文件会在进程启动时被清掉。目录必须是 `mktemp -d` 这种 0700 目录。
+
+开隧道前的实测和残余风险见 [只读远程 MCP 安全评审](remote-readonly-security-review.md)。
 
 
 

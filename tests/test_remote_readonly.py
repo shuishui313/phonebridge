@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
@@ -76,12 +77,14 @@ class RemoteReadOnlyTests(unittest.TestCase):
             server.stop()
         self.tmp.cleanup()
 
-    def start(self, token=TOKEN, expires_at=None, **kwargs) -> RemoteReadOnlyServer:
+    def start(self, token=TOKEN, expires_at=None, request_timeout=5, max_inflight=8,
+              **kwargs) -> RemoteReadOnlyServer:
         if expires_at is None:
             expires_at = 10**12
         app = RemoteReadOnlyApp(token, expires_at, self.audit, clock=lambda: 1_700_000_000,
                                 **kwargs)
-        server = RemoteReadOnlyServer(app)
+        server = RemoteReadOnlyServer(
+            app, request_timeout=request_timeout, max_inflight=max_inflight)
         server.start()
         self.servers.append(server)
         return server
@@ -381,6 +384,191 @@ class RemoteReadOnlyTests(unittest.TestCase):
         self.assertEqual(response.status, 401)
         self.assertEqual(response.read(), b"unauthorized\n")
         connection.close()
+
+    def test_query_forwarded_headers_and_framing_do_not_bypass_auth(self):
+        server = self.start(allowed_hosts=frozenset({"tunnel.example.com"}))
+        connection = HTTPConnection("127.0.0.1", server.port, timeout=5)
+        connection.request(
+            "POST", "/mcp?api_key=" + TOKEN, body=b"{}",
+            headers={"Authorization": f"Bearer {TOKEN}", "Host": "tunnel.example.com",
+                     "X-Forwarded-Host": "evil.example", "X-Forwarded-For": "127.0.0.1"})
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        self.assertEqual(response.status, 401)
+        self.assertEqual(body, b"unauthorized\n")
+        self.assertNotIn(TOKEN, Path(self.audit).read_text(encoding="utf-8"))
+        spoofed = _raw(server.port, (
+            f"POST /mcp HTTP/1.1\r\nHost: evil.example\r\n"
+            f"X-Forwarded-Host: tunnel.example.com\r\nX-Forwarded-For: 127.0.0.1\r\n"
+            f"Forwarded: host=tunnel.example.com\r\nAuthorization: Bearer {TOKEN}\r\n"
+            f"Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        ).encode())
+        self.assertEqual(_status(spoofed), 403)
+        init = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).encode()
+        smuggled = init + b"XX"
+        payload = (
+            f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+            f"Content-Length: {len(init)}\r\nContent-Length: {len(smuggled)}\r\n"
+            f"Authorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+        ).encode() + smuggled
+        blob = _raw(server.port, payload)
+        self.assertNotEqual(_status(blob), 200)
+        self.assertNotIn(b"protocolVersion", blob)
+        chunked = (
+            f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+            f"Content-Length: {len(init)}\r\nTransfer-Encoding: chunked\r\n"
+            f"Authorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+        ).encode() + init
+        blob = _raw(server.port, chunked)
+        self.assertNotIn(b"protocolVersion", blob)
+        missing = (
+            f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+            f"Authorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+        ).encode()
+        blob = _raw(server.port, missing)
+        self.assertEqual(_status(blob), 411)
+        self.assertIn(b"length_required\n", blob)
+
+    def test_deep_json_and_unknown_method_stay_plain(self):
+        server = self.start()
+        nested = (b'{"a":' * 1200) + b"1" + (b"}" * 1200)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            blob = _raw(server.port, (
+                f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n"
+                f"Authorization: Bearer {TOKEN}\r\nContent-Length: {len(nested)}\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode() + nested)
+        self.assertEqual(_status(blob), 400)
+        self.assertEqual(blob.split(b"\r\n\r\n", 1)[1], b"bad_request\n")
+        self.assertNotIn("Traceback", stderr.getvalue())
+        trace = _raw(server.port, f"TRACE /mcp HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n\r\n".encode())
+        self.assertEqual(_status(trace), 405)
+        self.assertNotIn(b"<html", trace.lower())
+        self.assertNotIn(b"TRACE", trace.split(b"\r\n\r\n", 1)[1])
+
+    def test_audit_and_errors_do_not_echo_caller_text(self):
+        server = self.start(rate_limit=20)
+        session = self.handshake(server)
+        response = self.request(server, {
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "intent_run", "arguments": {"capability": "message.send"}},
+        }, token=TOKEN, session=session)
+        raw = response.read()
+        response._connection.close()
+        self.assertNotIn(b"message.send", raw)
+        self.assertEqual(json.loads(raw)["result"]["structuredContent"]["error"], "intent_not_allowed")
+        planted = "note\n" + TOKEN
+        response = self.request(server, {
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": planted, "arguments": {}},
+        }, token=TOKEN, session=session)
+        response.read()
+        response._connection.close()
+        text = Path(self.audit).read_text(encoding="utf-8")
+        self.assertNotIn(TOKEN, text)
+        self.assertNotIn("note", text)
+        for line in text.splitlines():
+            self.assertEqual(json.loads(line)["tool"] in {
+                "auth", "initialize", "initialized", "tools/list", "intent_run", "unknown_tool",
+            }, True)
+
+    def test_session_cap_and_slow_header_limit(self):
+        capped = self.start(max_sessions=1, rate_limit=10)
+        first = self.request(capped, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                             token=TOKEN)
+        self.assertEqual(first.status, 200)
+        first.read()
+        first._connection.close()
+        second = self.request(capped, {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}},
+                              token=TOKEN)
+        self.assertEqual(second.status, 503)
+        self.assertEqual(second.read(), b"unavailable\n")
+        second._connection.close()
+        self.assertEqual(len(capped.app._sessions), 1)
+
+        limited = self.start(max_inflight=1, request_timeout=0.4, rate_limit=20)
+        held = socket.create_connection(("127.0.0.1", limited.port), timeout=2)
+        try:
+            held.sendall(f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{limited.port}\r\n".encode())
+            occupied = False
+            for _ in range(50):
+                if not limited._httpd.inflight.acquire(blocking=False):
+                    occupied = True
+                    break
+                limited._httpd.inflight.release()
+                time.sleep(0.01)
+            self.assertTrue(occupied)
+            probe = _raw(limited.port, (
+                f"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{limited.port}\r\n"
+                f"Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            ).encode(), timeout=2)
+            self.assertEqual(_status(probe), 429)
+            self.assertIn(b"rate_limited\n", probe)
+        finally:
+            held.close()
+
+    def test_token_file_is_shredded_and_absent_from_process_listing(self):
+        token_path = Path(self.tmp.name) / "token"
+        token_path.write_text(TOKEN + "\n", encoding="utf-8")
+        os.chmod(token_path, 0o600)
+        env = os.environ.copy()
+        env.pop("PB_REMOTE_REVIEW_TOKEN", None)
+        process = subprocess.Popen(
+            [sys.executable, "-m", "phonebridge.remote_readonly",
+             "--port", "0", "--token-file", str(token_path),
+             "--token-ttl-seconds", "30", "--audit-path", self.audit],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        try:
+            line = process.stdout.readline()
+            self.assertIsNone(process.poll())
+            self.assertIn("port", line)
+            self.assertFalse(token_path.exists())
+            listing = subprocess.run(["ps", "eww", "-p", str(process.pid)],
+                                     capture_output=True, text=True, check=False)
+            self.assertNotIn(TOKEN, listing.stdout)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+        open_file = Path(self.tmp.name) / "open-token"
+        open_file.write_text(TOKEN + "\n", encoding="utf-8")
+        os.chmod(open_file, 0o644)
+        code = remote_readonly.main([
+            "--port", "0", "--token-file", str(open_file),
+            "--token-ttl-seconds", "30", "--audit-path", self.audit,
+        ])
+        self.assertEqual(code, 2)
+        self.assertTrue(open_file.exists())
+
+
+def _raw(port: int, payload: bytes, timeout: float = 3) -> bytes:
+    connection = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    connection.settimeout(timeout)
+    chunks = []
+    try:
+        connection.sendall(payload)
+        while True:
+            piece = connection.recv(65536)
+            if not piece:
+                break
+            chunks.append(piece)
+    except (socket.timeout, OSError):
+        pass
+    finally:
+        connection.close()
+    return b"".join(chunks)
+
+
+def _status(blob: bytes) -> int:
+    parts = blob.split(b" ", 2)
+    return int(parts[1]) if len(parts) > 1 else 0
 
 
 if __name__ == "__main__":

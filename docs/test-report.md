@@ -325,6 +325,8 @@ GitHub 上的 Python 作业从引入 SSH 回环测试的 `2e1ae66` 起就失败�
 
 `phonebridge/remote_readonly.py` 单独进程，只绑定 `127.0.0.1`。模块不导入审批、提交或设备驱动，包入口改为按需导入，进程启动时也不会把这些模块装进来。`tests/test_remote_readonly.py` 有 12 项。除原先的工具清单、一致的 401、URL 令牌、Origin、写意图、超大请求体、已认证限流、合成结果和审计不含令牌之外，还覆盖：相对导入会归一成 `phonebridge.approvals` / `phonebridge.core` / `phonebridge.drivers` 并被拒绝；未带令牌的请求同样计入限流；审计文件是 0600 且父目录没有组和其他权限；413 之后同一连接不会再读到默认的 HTML 400；`nan` 有效期拒绝启动；`--port 0` 的端口行在进程还活着时就能读到；Server 头不含运行时版本；DELETE 和 OPTIONS 返回 405 并关闭连接；默认拒绝隧道 Host，显式允许的 Host 才进入鉴权。本机 Python 3.10 与 3.13 全套都是 245 项通过；远程只读这 12 项连续 10 次通过。没有开隧道，没有对公网监听。
 
+随后在同一回环上做了对抗性复核，结论见 [只读远程 MCP 安全评审](remote-readonly-security-review.md)。修复了重复 `Content-Length` 与 `Transfer-Encoding` 混用时仍执行请求、慢请求占住线程、过深 JSON 把回溯写到标准错误、查询串和审计原文、未知方法的 HTML 回显，以及会话表无上限。令牌文件会在启动时销毁。远程只读测试现为 17 项，连续 5 次通过。Python 3.10 与 3.13 全套都是 250 项通过。
+
 ## 重跑自动测试
 
 从仓库根目录运行。
