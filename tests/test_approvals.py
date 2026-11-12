@@ -2,6 +2,8 @@ import json
 import os
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -69,6 +71,16 @@ class ApprovalSocketTests(unittest.TestCase):
 
     def test_unknown_action(self):
         self.assertFalse(approval_request(self.path, "shutdown")["ok"])
+
+    def test_operation_id_starting_with_dash_reaches_the_approval_socket(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "phonebridge.cli", "--approval-socket", self.path,
+             "approvals", "approve", "-dashed-operation", "--token-env", "PB_UNUSED"],
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("unrecognized arguments", result.stderr)
+        self.assertEqual(json.loads(result.stdout)["error"], "unknown_or_processed_approval")
 
     def test_delayed_request_is_still_approved(self):
         """The server must outwait a client that is slow to write the request."""

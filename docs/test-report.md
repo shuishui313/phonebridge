@@ -261,7 +261,7 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 ## 2026-11-12 本机复核
 
-环境：用户的 Mac（worker phonebridge-mac），基线 `b0aeafc`，Python 3.10.10，Xcode 27.2（27B52），已启动的 iPhone 18 Pro Simulator。只使用合成联系人和合成正文。原始 JSON 含本机路径，不入库。
+环境：用户的 Mac，基线 `b0aeafc`，Python 3.10.10，Xcode 27.2（27B52），已启动的 iPhone 18 Pro Simulator。只使用合成联系人和合成正文。原始 JSON 含本机路径，不入库。
 
 | 命令 | 实际结果 |
 | --- | --- |
@@ -319,7 +319,13 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 GitHub 上的 Python 作业从引入 SSH 回环测试的 `2e1ae66` 起就失败。`43ae038` 的日志确认失败项仍是 `test_full_chain_over_key_only_ssh_loopback`：runner 上找得到 sshd，但进程马上退出，测试在 1 秒内失败。本机 macOS 的 3.10 和 3.13 仍能跑通。脚本现在会在 sshd 抱怨缺少 privilege separation 目录时用 `sudo -n` 建那个目录再启动一次，并把配置里的 `StrictModes` 关掉，避免 Linux 因为临时目录的父目录全局可写而拒绝密钥。找不到 sshd 时测试跳过。这些都发生在临时进程里，不改这台 Mac 的 Remote Login。
 
-本机表面和留给用户的一条合成任务写在 [Hark 接入](hark-codex.md)。既有会话的设置页能看到「设备控制和数据访问」，其中有 Codex Computer Use 与 Cursor Computer Use；没有 SSH 或 Terminal 标签。这次没有拨动开关。没有新登录，没有改系统 SSH，没有连接真机，没有打开真实第三方 App，也没有发送真实消息。模拟器上的 4 项 XCUITest、G1、提交拦截和 G2 都在这次复核里重新跑过。
+当时把本机已安装应用的名单误记成 Hark 自己的设置开关。这个步骤作废，原因和远程只读 MCP 的边界写在 [Hark 接入](hark-codex.md)。没有新登录，没有改系统 SSH，没有连接真机，没有打开真实第三方 App，也没有发送真实消息。模拟器上的 4 项 XCUITest、G1、提交拦截和 G2 都在这次复核里重新跑过。
+
+## 2026-11-12 远程只读 MCP 本地回环
+
+`phonebridge/remote_readonly.py` 单独进程，只绑定 `127.0.0.1`。模块不导入审批、提交或设备驱动，包入口改为按需导入，进程启动时也不会把这些模块装进来。`tests/test_remote_readonly.py` 有 12 项。除原先的工具清单、一致的 401、URL 令牌、Origin、写意图、超大请求体、已认证限流、合成结果和审计不含令牌之外，还覆盖：相对导入会归一成 `phonebridge.approvals` / `phonebridge.core` / `phonebridge.drivers` 并被拒绝；未带令牌的请求同样计入限流；审计文件是 0600 且父目录没有组和其他权限；413 之后同一连接不会再读到默认的 HTML 400；`nan` 有效期拒绝启动；`--port 0` 的端口行在进程还活着时就能读到；Server 头不含运行时版本；DELETE 和 OPTIONS 返回 405 并关闭连接；默认拒绝隧道 Host，显式允许的 Host 才进入鉴权。本机 Python 3.10 与 3.13 全套都是 245 项通过；远程只读这 12 项连续 10 次通过。没有开隧道，没有对公网监听。
+
+随后在同一回环上做了对抗性复核，结论见 [只读远程 MCP 安全评审](remote-readonly-security-review.md)。修复了重复 `Content-Length` 与 `Transfer-Encoding` 混用时仍执行请求、慢请求占住线程、过深 JSON 把回溯写到标准错误、查询串和审计原文、未知方法的 HTML 回显，以及会话表无上限。令牌文件会在启动时销毁。远程只读测试现为 17 项，连续 5 次通过。Python 3.10 与 3.13 全套都是 250 项通过。
 
 ## 重跑自动测试
 

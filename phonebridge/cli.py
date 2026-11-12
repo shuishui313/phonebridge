@@ -17,6 +17,43 @@ from .submissions import SubmissionLedger
 from .xcode_mcp import XcodeMCPDriver
 
 
+_APPROVAL_OPTIONS_WITH_VALUE = {"--token-env", "--socket-owner-uid"}
+
+
+def peel_dashed_approval_id(argv: list[str]) -> tuple[list[str], str | None]:
+    """Pull an operation id that starts with '-' out before argparse sees it.
+
+    ``secrets.token_urlsafe`` emits '-' often enough that ``approvals approve
+    <id>`` otherwise exits 2 before the approval socket is contacted. A bare
+    ``--`` terminator does not survive this parser once another option follows
+    the subcommand, so the id is removed and restored after parsing.
+    """
+    if "approvals" not in argv:
+        return argv, None
+    index = argv.index("approvals")
+    rest = argv[index + 1:]
+    if not rest or rest[0] not in {"approve", "deny", "reconcile"}:
+        return argv, None
+    rebuilt = [rest[0]]
+    peeled = None
+    cursor = 1
+    while cursor < len(rest):
+        token = rest[cursor]
+        if token in _APPROVAL_OPTIONS_WITH_VALUE:
+            rebuilt.extend(rest[cursor:cursor + 2])
+            cursor += 2
+            continue
+        if peeled is None and token.startswith("-") and not token.startswith("--"):
+            peeled = token
+            cursor += 1
+            continue
+        rebuilt.append(token)
+        cursor += 1
+    if peeled is None:
+        return argv, None
+    return [*argv[:index + 1], *rebuilt], peeled
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="phonebridge")
     p.add_argument("--approval-socket", help="Private Unix approval socket; parent directory MUST have chmod 700")
@@ -59,7 +96,11 @@ def main(argv=None):
     ap.add_argument("id", nargs="?")
     ap.add_argument("--token-env", help="Env var holding the approval token")
     ap.add_argument("--socket-owner-uid", type=int, help="Socket owner UID for a separate approver account")
-    args = p.parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    raw, dashed_operation_id = peel_dashed_approval_id(raw)
+    args = p.parse_args(raw)
+    if dashed_operation_id is not None:
+        args.id = dashed_operation_id
     if args.command == "approvals":
         if not args.approval_socket:
             p.error("--approval-socket is required for approvals")
