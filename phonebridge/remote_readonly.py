@@ -1,8 +1,10 @@
-"""Loopback Streamable HTTP MCP for a Mock-only read surface.
+"""Loopback Streamable HTTP MCP for a synthetic read surface.
 
-This process is separate from the stdio server. The driver is Mock and is
-not configurable. Write tools and the approval modules are not imported.
-The listener accepts 127.0.0.1 only.
+This process is separate from the stdio server. It does not import the
+approval, submission, or device-driver modules. Contacts below are the
+synthetic fixture values, copied as id and name only. The listener accepts
+127.0.0.1 only. Extra Host names are off unless the process is started
+with them after a separate review.
 """
 from __future__ import annotations
 
@@ -10,22 +12,29 @@ import argparse
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
+import stat
 import sys
 import threading
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-
-from .drivers import MockIPhone
 
 
 TOOLS = ("phone_status", "intent_run", "phone_inspect")
 ALLOWED_INTENT = "contacts.lookup"
 CONTACT_FIELDS = ("id", "name")
+SYNTHETIC_CONTACTS = (
+    {"id": "contact-01", "name": "Test Contact"},
+    {"id": "contact-02", "name": "Casey"},
+    {"id": "alex-01", "name": "Alex"},
+    {"id": "alex-02", "name": "Alex"},
+)
 QUERY_TOKEN_KEYS = frozenset({"token", "access_token", "auth", "authorization"})
 AUTH_BODY = b"unauthorized\n"
 ORIGIN_BODY = b"origin_rejected\n"
@@ -34,11 +43,32 @@ RATE_BODY = b"rate_limited\n"
 PROTOCOL = "2025-06-18"
 
 
-def _project_contacts(driver: MockIPhone) -> list[dict[str, str]]:
+def _project_contacts(contacts) -> list[dict[str, str]]:
     projected = []
-    for item in driver.contacts:
+    for item in contacts:
         projected.append({field: str(item[field]) for field in CONTACT_FIELDS})
     return projected
+
+
+def take_token(env_name: str) -> str:
+    """Read the bearer secret once and drop it from the process environment."""
+    return os.environ.pop(env_name, "")
+
+
+def prepare_audit(path: str) -> None:
+    """Create a 0600 audit file inside an already private directory."""
+    target = Path(path)
+    parent = target.parent
+    if not parent.is_dir():
+        raise ValueError("audit directory is missing")
+    parent_mode = stat.S_IMODE(parent.stat().st_mode)
+    if parent_mode & 0o077:
+        raise ValueError("audit directory must be private")
+    fd = os.open(target, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.chmod(fd, 0o600)
+    finally:
+        os.close(fd)
 
 
 class ReadOnlySession:
@@ -52,21 +82,28 @@ class RemoteReadOnlyApp:
 
     def __init__(self, token: str, expires_at: float, audit_path: str, *,
                  max_body: int = 8192, rate_limit: int = 30,
-                 rate_window_seconds: float = 60.0, clock=None):
+                 rate_window_seconds: float = 60.0, clock=None,
+                 allowed_hosts: frozenset[str] | None = None):
         if not isinstance(token, str) or not token or any(ch in token for ch in "\r\n\x00"):
             raise ValueError("remote token must be a single non-empty line")
-        if max_body < 1 or rate_limit < 1 or rate_window_seconds <= 0:
+        if not math.isfinite(float(expires_at)):
+            raise ValueError("expiry must be finite")
+        if max_body < 1 or rate_limit < 1 or not math.isfinite(rate_window_seconds) or rate_window_seconds <= 0:
             raise ValueError("limits must be positive")
+        prepare_audit(audit_path)
         self._salt = secrets.token_bytes(32)
-        self._mac = hmac.new(self._salt, token.encode("utf-8"), hashlib.sha256).digest()
+        material = token.encode("utf-8")
+        self._mac = hmac.new(self._salt, material, hashlib.sha256).digest()
         self._dummy = hmac.new(self._salt, b"", hashlib.sha256).digest()
+        del material
         self.expires_at = float(expires_at)
         self.audit_path = audit_path
         self.max_body = int(max_body)
         self.rate_limit = int(rate_limit)
         self.rate_window_seconds = float(rate_window_seconds)
         self.clock = clock or time.time
-        self.driver = MockIPhone()
+        self.contacts = [dict(item) for item in SYNTHETIC_CONTACTS]
+        self.allowed_hosts = frozenset(allowed_hosts or ())
         self._sessions: dict[str, ReadOnlySession] = {}
         self._hits: deque[float] = deque()
         self._lock = threading.Lock()
@@ -106,6 +143,10 @@ class RemoteReadOnlyApp:
                 return False
             self._hits.append(now)
             return True
+
+    def host_allowed(self, host: str) -> bool:
+        loopback = {f"127.0.0.1:{self._port}", f"localhost:{self._port}"}
+        return host in loopback or host in self.allowed_hosts
 
     def origin_allowed(self, origin: str | None) -> bool:
         if origin is None:
@@ -147,7 +188,7 @@ class RemoteReadOnlyApp:
         if capability != ALLOWED_INTENT:
             return {"ok": False, "error": "intent_not_allowed", "capability": capability}
         return {"ok": True, "capability": ALLOWED_INTENT, "channel": "A",
-                "result": {"contacts": _project_contacts(self.driver)}}
+                "result": {"contacts": _project_contacts(self.contacts)}}
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         if name == "phone_status" and arguments == {}:
@@ -166,19 +207,42 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    def version_string(self) -> str:
+        return self.server_version
+
     def date_time_string(self, timestamp: float | None = None) -> str:
         return "Thu, 01 Jan 2026 00:00:00 GMT"
 
     def _send(self, status: int, body: bytes, content_type: str,
               session_id: str | None = None) -> None:
+        if status >= 400:
+            self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if status >= 400:
+            self.send_header("Connection", "close")
         if session_id:
             self.send_header("Mcp-Session-Id", session_id)
         self.end_headers()
         self.wfile.write(body)
+
+    def _content_length(self, app: RemoteReadOnlyApp) -> int | None:
+        length = self.headers.get("Content-Length")
+        if length is None:
+            return 0
+        try:
+            size = int(length)
+        except ValueError:
+            return None
+        if size < 0:
+            return None
+        return size
+
+    def _reject_method(self) -> None:
+        self.close_connection = True
+        self._send(405, b"method_not_allowed\n", "text/plain; charset=utf-8")
 
     def _unauthorized(self, reason: str) -> None:
         self.server.app.audit("auth", reason)  # type: ignore[attr-defined]
@@ -190,6 +254,11 @@ class _Handler(BaseHTTPRequestHandler):
         if parts.path != "/mcp":
             self._send(404, b"not_found\n", "text/plain; charset=utf-8")
             return
+        size = self._content_length(app)
+        if size is None or size > app.max_body:
+            self._send(413, SIZE_BODY, "text/plain; charset=utf-8")
+            return
+        raw = self.rfile.read(size) if size else b""
         query = parse_qs(parts.query, keep_blank_values=True)
         if any(key.lower() in QUERY_TOKEN_KEYS for key in query):
             self._unauthorized("token_in_query")
@@ -199,20 +268,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(403, ORIGIN_BODY, "text/plain; charset=utf-8")
             return
         host = self.headers.get("Host", "")
-        if host not in {f"127.0.0.1:{app._port}", f"localhost:{app._port}"}:
+        if not app.host_allowed(host):
             self._send(403, ORIGIN_BODY, "text/plain; charset=utf-8")
             return
-        length = self.headers.get("Content-Length")
-        try:
-            size = int(length) if length is not None else 0
-        except ValueError:
-            size = app.max_body + 1
-        if size > app.max_body:
-            self._send(413, SIZE_BODY, "text/plain; charset=utf-8")
-            return
-        raw = self.rfile.read(size)
-        if len(raw) > app.max_body:
-            self._send(413, SIZE_BODY, "text/plain; charset=utf-8")
+        if not app.allow_request():
+            app.audit("rate_limit", "rejected")
+            self._send(429, RATE_BODY, "text/plain; charset=utf-8")
             return
         header = self.headers.get("Authorization")
         presented = None
@@ -221,10 +282,6 @@ class _Handler(BaseHTTPRequestHandler):
         reason = app.auth_failure(presented)
         if reason:
             self._unauthorized(reason)
-            return
-        if not app.allow_request():
-            app.audit("rate_limit", "rejected")
-            self._send(429, RATE_BODY, "text/plain; charset=utf-8")
             return
         try:
             message = json.loads(raw.decode("utf-8"))
@@ -288,7 +345,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(400, b"bad_request\n", "text/plain; charset=utf-8")
 
     def do_GET(self) -> None:  # noqa: N802
-        self._send(405, b"method_not_allowed\n", "text/plain; charset=utf-8")
+        self._reject_method()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._reject_method()
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._reject_method()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._reject_method()
 
 
 def _schema(name: str) -> dict:
@@ -348,18 +414,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-body", type=int, default=8192)
     parser.add_argument("--rate-limit", type=int, default=30)
     parser.add_argument("--rate-window-seconds", type=float, default=60.0)
+    parser.add_argument("--allowed-host", action="append", default=[],
+                        help="Extra Host header allowed only after a separate tunnel review")
     args = parser.parse_args(argv)
-    token = os.environ.get(args.token_env, "")
+    token = take_token(args.token_env)
+    if (not math.isfinite(args.token_ttl_seconds) or args.token_ttl_seconds <= 0
+            or not math.isfinite(args.rate_window_seconds) or args.rate_window_seconds <= 0):
+        print("remote readonly MCP refused to start", file=sys.stderr)
+        return 2
     try:
         app = RemoteReadOnlyApp(
             token, time.time() + args.token_ttl_seconds, args.audit_path,
             max_body=args.max_body, rate_limit=args.rate_limit,
-            rate_window_seconds=args.rate_window_seconds)
+            rate_window_seconds=args.rate_window_seconds,
+            allowed_hosts=frozenset(args.allowed_host))
     except ValueError:
         print("remote readonly MCP refused to start", file=sys.stderr)
         return 2
     server = RemoteReadOnlyServer(app, args.port)
-    print(json.dumps({"port": server.port}))
+    print(json.dumps({"port": server.port}), flush=True)
     try:
         server._httpd.serve_forever()
     except KeyboardInterrupt:

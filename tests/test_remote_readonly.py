@@ -1,8 +1,14 @@
 import ast
+import contextlib
 import getpass
+import io
 import json
 import os
+import signal
 import socket
+import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from http.client import HTTPConnection
@@ -26,6 +32,28 @@ FORBIDDEN_IMPORTS = {
     "phonebridge.relay",
     "phonebridge.core",
 }
+
+
+def normalized_imports(source: str, package: str = "phonebridge") -> set[str]:
+    """Resolve relative imports so ``from .approvals`` is ``phonebridge.approvals``."""
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                keep = len(parts) - (node.level - 1)
+                base = ".".join(parts[:keep]) if keep > 0 else ""
+                if node.module:
+                    full = f"{base}.{node.module}" if base else node.module
+                    found.add(full)
+                else:
+                    for alias in node.names:
+                        found.add(f"{base}.{alias.name}" if base else alias.name)
+            elif node.module:
+                found.add(node.module)
+    return found
 
 
 def signature(response) -> tuple:
@@ -105,19 +133,36 @@ class RemoteReadOnlyTests(unittest.TestCase):
         return payload
 
     def test_module_does_not_import_write_or_approval_code(self):
-        tree = ast.parse(MODULE.read_text(encoding="utf-8"))
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-                imported.update(f"{node.module}.{alias.name}" for alias in node.names)
-        self.assertTrue(imported.isdisjoint(FORBIDDEN_IMPORTS), imported)
+        imported = normalized_imports(MODULE.read_text(encoding="utf-8"))
+        self.assertTrue(imported.isdisjoint(FORBIDDEN_IMPORTS | {"phonebridge.drivers"}), imported)
+        samples = {
+            "from .approvals import ApprovalEndpoint": "phonebridge.approvals",
+            "from .core import PhoneBridge": "phonebridge.core",
+            "from .drivers import MockIPhone": "phonebridge.drivers",
+            "from . import drivers": "phonebridge.drivers",
+        }
+        for source, forbidden in samples.items():
+            self.assertIn(forbidden, normalized_imports(source))
         self.assertEqual(remote_readonly.TOOLS, ("phone_status", "intent_run", "phone_inspect"))
+        stderr = io.StringIO()
         with self.assertRaises(SystemExit) as raised:
-            remote_readonly.main(["--driver", "mock"])
+            with contextlib.redirect_stderr(stderr):
+                remote_readonly.main(["--driver", "mock"])
         self.assertEqual(raised.exception.code, 2)
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import phonebridge.remote_readonly, sys\n"
+             "print('\\n'.join(sorted(name for name in sys.modules "
+             "if name == 'phonebridge' or name.startswith('phonebridge.'))))"],
+            check=True, capture_output=True, text=True, env=env, cwd=ROOT)
+        loaded = set(probe.stdout.split())
+        self.assertIn("phonebridge.remote_readonly", loaded)
+        self.assertTrue(loaded.isdisjoint({
+            "phonebridge.drivers", "phonebridge.core", "phonebridge.approvals",
+            "phonebridge.submissions", "phonebridge.mcp_v04",
+        }), loaded)
 
     def test_tools_list_is_exactly_three_read_tools(self):
         server = self.start()
@@ -153,6 +198,7 @@ class RemoteReadOnlyTests(unittest.TestCase):
         response = self.request(server, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                           "params": {}}, token=TOKEN, origin="https://evil.example")
         self.assertEqual(response.status, 403)
+        self.assertEqual(response.getheader("Connection"), "close")
         self.assertEqual(response.read(), b"origin_rejected\n")
         response._connection.close()
 
@@ -193,9 +239,9 @@ class RemoteReadOnlyTests(unittest.TestCase):
 
     def test_successful_reads_are_synthetic_and_carry_no_local_identifiers(self):
         server = self.start()
-        server.app.driver.contacts = (
+        server.app.contacts = [
             {"id": "contact-01", "name": "Test Contact", "secret": "do-not-serialize"},
-        )
+        ]
         session = self.handshake(server)
         status = self.call(server, session, "phone_status", {}, 6)
         contacts = self.call(server, session, "intent_run", {"capability": "contacts.lookup"}, 7)
@@ -217,6 +263,124 @@ class RemoteReadOnlyTests(unittest.TestCase):
         self.assertIn("phone_status", text)
         self.assertIn("intent_run", text)
         self.assertNotIn(TOKEN, text)
+        self.assertEqual(stat.S_IMODE(os.stat(self.audit).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(Path(self.audit).parent.stat().st_mode) & 0o077, 0)
+
+    def test_unauthenticated_requests_are_rate_limited(self):
+        server = self.start(rate_limit=2)
+        statuses = []
+        for _ in range(8):
+            response = self.request(server, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                              "params": {}})
+            statuses.append(response.status)
+            self.assertEqual(response.getheader("Connection"), "close")
+            response.read()
+            response._connection.close()
+        self.assertEqual(statuses[:2], [401, 401])
+        self.assertEqual(statuses[2:], [429] * 6)
+
+    def test_oversized_response_does_not_poison_the_connection(self):
+        server = self.start(max_body=32)
+        connection = HTTPConnection("127.0.0.1", server.port, timeout=5)
+        connection.request("POST", "/mcp", body=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
+                           headers={"Content-Type": "application/json",
+                                    "Authorization": f"Bearer {TOKEN}"})
+        first = connection.getresponse()
+        self.assertEqual(first.status, 413)
+        self.assertEqual(first.read(), b"payload_too_large\n")
+        self.assertEqual(first.getheader("Connection"), "close")
+        try:
+            connection.request("POST", "/mcp", body=b"{}",
+                               headers={"Content-Type": "application/json",
+                                        "Authorization": f"Bearer {TOKEN}"})
+            second = connection.getresponse()
+            body = second.read()
+            self.assertNotIn(b"<html", body.lower())
+        except (ConnectionError, OSError):
+            return
+        finally:
+            connection.close()
+
+    def test_nonfinite_ttl_is_rejected_and_port_line_is_flushed(self):
+        with self.assertRaises(ValueError):
+            RemoteReadOnlyApp(TOKEN, float("nan"), self.audit)
+        with self.assertRaises(ValueError):
+            RemoteReadOnlyApp(TOKEN, float("inf"), self.audit)
+        env_name = "PB_REMOTE_REVIEW_TOKEN"
+        os.environ[env_name] = TOKEN
+        try:
+            code = remote_readonly.main([
+                "--port", "0", "--token-env", env_name,
+                "--token-ttl-seconds", "nan", "--audit-path", self.audit,
+            ])
+        finally:
+            os.environ.pop(env_name, None)
+        self.assertEqual(code, 2)
+        self.assertNotIn(env_name, os.environ)
+        self.assertEqual(remote_readonly.take_token(env_name), "")
+        os.environ[env_name] = TOKEN
+        self.assertEqual(remote_readonly.take_token(env_name), TOKEN)
+        self.assertNotIn(env_name, os.environ)
+        os.environ[env_name] = TOKEN
+        process = subprocess.Popen(
+            [sys.executable, "-m", "phonebridge.remote_readonly",
+             "--port", "0", "--token-env", env_name,
+             "--token-ttl-seconds", "30", "--audit-path", self.audit],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            line = process.stdout.readline()
+            self.assertIsNone(process.poll())
+            self.assertIn("port", line)
+        finally:
+            process.send_signal(signal.SIGINT)
+            process.wait(timeout=5)
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            os.environ.pop(env_name, None)
+
+    def test_server_header_hides_runtime_and_unused_methods_are_closed(self):
+        server = self.start()
+        session = self.handshake(server)
+        response = self.request(server, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+        }, token=TOKEN, session=session)
+        server_header = response.getheader("Server")
+        response.read()
+        response._connection.close()
+        self.assertNotIn("Python", server_header)
+        for method in ("DELETE", "OPTIONS"):
+            connection = HTTPConnection("127.0.0.1", server.port, timeout=5)
+            connection.request(method, "/mcp")
+            reply = connection.getresponse()
+            body = reply.read()
+            connection.close()
+            self.assertEqual(reply.status, 405)
+            self.assertEqual(body, b"method_not_allowed\n")
+            self.assertEqual(reply.getheader("Connection"), "close")
+
+    def test_default_host_rejects_a_tunnel_name(self):
+        server = self.start()
+        connection = HTTPConnection("127.0.0.1", server.port, timeout=5)
+        connection.request("POST", "/mcp", body=b"{}",
+                           headers={"Content-Type": "application/json",
+                                    "Host": "tunnel.example.com",
+                                    "Authorization": f"Bearer {TOKEN}"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 403)
+        response.read()
+        connection.close()
+        allowed = self.start(allowed_hosts=frozenset({"tunnel.example.com"}))
+        connection = HTTPConnection("127.0.0.1", allowed.port, timeout=5)
+        connection.request("POST", "/mcp", body=b"{}",
+                           headers={"Content-Type": "application/json",
+                                    "Host": "tunnel.example.com"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 401)
+        self.assertEqual(response.read(), b"unauthorized\n")
+        connection.close()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# 通过 Hark SSH 使用 PhoneBridge
+# 通过 Hark 接入 PhoneBridge
 
 设计中的首期路径是 Hark → SSH → macOS 或 Linux 主机上的 Codex → stdio MCP → PhoneBridge。主机运行 Codex CLI、PhoneBridge 和 Mock Driver。若主机安装完整 Xcode，也可单独连接 Apple Simulator 诊断驱动。**主机侧链路已有可复跑证据**：带中断客户端时直连与临时 SSH 回环都是 51 项、`host_chain_passed: true`。本机安装的 Hark Mac 应用没有字面 SSH 控件，真实模型的只读 MCP 注入已单独复跑通过。现场步骤和边界见下文与 [测试报告](test-report.md)。
 
@@ -49,7 +49,7 @@ python3 scripts/hark-codex-spike.py --codex-path <客户端路径> \
 
 ## 2026-11-12 本机可执行路径
 
-复核机器是用户的 Mac（worker phonebridge-mac），代码基线 `b0aeafc`。Xcode 27.2，已启动的模拟器是 iPhone 18 Pro。下面三条路径里，前两条已经在这台机器上跑通；第三条停在必须由用户发出的一条合成 Hark 任务。
+复核在用户的 Mac 上完成，代码基线 `b0aeafc`。Xcode 27.2，已启动的模拟器是 iPhone 18 Pro。下面两条路径已经在这台机器上跑通。第三条原先写成从 Hark 窗口粘贴命令，该步骤已作废，见下文更正。
 
 ### 已跑通 · 确定性主机链路
 
@@ -71,24 +71,27 @@ Codex CLI 在 ChatGPT.app 内，版本 `codex-cli 0.167.0-alpha.3.2`，`codex lo
 
 ### 更正：Hark 没有本机执行入口
 
-先前把 macOS 上已安装的应用列表（百度网盘、飞书、Grok Bot、Codex Computer Use.app 等）误写成 Hark 设置里的「设备控制和数据访问」开关，并让用户打开 Codex Computer Use、再把 `codex exec` 粘进 Hark 去本机执行。这个步骤作废。
+先前把本机已安装应用的名单误写成 Hark 自己的设置开关，并让用户打开其中的桌面控制程序、再把 `codex exec` 粘进 Hark 去本机执行。这个步骤作废。
 
-Hark 确认过：它的命令跑在自己的云端沙箱里。Mac 版外壳目前只向这个沙箱开放设备权限，而且只有定位。Codex Computer Use 属于 Codex，Hark 打开它也得不到本机执行能力。Hark 能接 PhoneBridge 的方式是注册用户自己的远程 MCP（`streamable_http`），由云端来调用。
+Hark 确认过：它的命令跑在自己的云端沙箱里。Mac 版外壳目前只向这个沙箱开放设备权限，而且只有定位。桌面控制程序属于本机的编码工具，Hark 打开它也得不到本机执行能力。Hark 能接 PhoneBridge 的方式是注册用户自己的远程 MCP（`streamable_http`），由云端来调用。
 
 本机 Codex CLI 的只读注入仍然有效，那是 Codex 自己的进程，不是 Hark 窗口。
 
 ### 第 1 步 · 本地回环只读 MCP（已实现）
 
-独立进程 `python3 -m phonebridge.remote_readonly`。驱动在代码里固定为 Mock，这个入口没有 `--driver`，也不连接主后端的 Unix 套接字。它只注册 `phone_status`、`intent_run`、`phone_inspect`。`intent_run` 在服务端按能力 ID 白名单只放行 `contacts.lookup`，返回的联系人只含 `id` 和 `name`。监听地址只能是 `127.0.0.1`。令牌从环境变量读入后只保留 HMAC，请求必须带 `Authorization: Bearer`，URL 参数里的令牌一律拒绝。缺失、错误、过期三种失败返回同一个 401 和同一段 `unauthorized`。真实原因只进审计日志，日志不写令牌。带 `Origin` 时只接受本进程端口上的 `http://127.0.0.1` 和 `http://localhost`。这一步不开隧道、不对公网监听、不改系统设置。
+独立进程 `python3 -m phonebridge.remote_readonly`。这个入口没有 `--driver`，也不连接主后端的 Unix 套接字。模块本身不导入审批、提交或设备驱动；`python -m` 时包入口也不会顺带加载它们。合成联系人写在该模块里，只保留 `id` 和 `name`。它只注册 `phone_status`、`intent_run`、`phone_inspect`。`intent_run` 在服务端按能力 ID 白名单只放行 `contacts.lookup`。监听地址只能是 `127.0.0.1`。令牌从环境变量读入后从该进程的环境里删掉，只保留 HMAC。请求必须带 `Authorization: Bearer`，URL 参数里的令牌一律拒绝。缺失、错误、过期三种失败返回同一个 401 和同一段 `unauthorized`。限流在鉴权之前计数。真实原因只进审计日志，日志不写令牌。审计文件要放在已经是 0700 的目录里，服务只创建 0600 文件。`--token-ttl-seconds` 必须是有限且大于 0 的数。`Host` 默认只接受本进程的回环名；`Origin` 也只接受回环。出错的响应会关闭连接。这一步不开隧道、不对公网监听、不改系统设置。
 
 ```sh
 export PB_REMOTE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+PB_AUDIT_DIR="$(mktemp -d /tmp/pb-remote-audit.XXXXXX)"
 python3 -m phonebridge.remote_readonly \
   --port 8765 --token-env PB_REMOTE_TOKEN --token-ttl-seconds 600 \
-  --audit-path /tmp/pb-remote-audit.jsonl
+  --audit-path "$PB_AUDIT_DIR/audit.jsonl"
 ```
 
-标准输出只有端口号。令牌不要写进命令行，也不要写进仓库。
+标准输出只有一行端口号，而且会立即刷出。令牌不要写进命令行，也不要写进仓库。父 shell 里的环境变量还在；服务进程自己的环境里已经没有。
+
+
 
 ### 第 2 步 · 待评审，本轮不做
 
@@ -97,10 +100,15 @@ Hark 已确认可以注册 `streamable_http` 远程 MCP。开隧道之前要单�
 - 地址必须是 HTTPS。URL 里不能带令牌。
 - 令牌放在 Hark 的安全保险箱，以 `Authorization: Bearer` 或 Hark 支持的自定义头注入。模型和沙箱看不到明文。
 - 令牌只注入到指定的隧道域名。临时隧道每次换域名都要重新注册。
+- 默认只接受回环 Host。反代要么把 Host 改写成 `127.0.0.1`，要么在单独批准之后用 `--allowed-host` 写明隧道域名。未批准前不要加这个参数。
 - 验证结束后，在 Hark 里删除该 MCP 和令牌，关掉隧道，并作废服务端令牌。
 - 第 2 步如果通过，证明的是 Hark 云端能经远程 MCP 只读调用 PhoneBridge 的 Mock。它不证明 Hark 能在本机执行命令，也不包含写操作和审批。写操作以后要不要走这条线，另开评审。
 
-## Hark 现场第一步 · Mock 拟稿与只读回读
+## 归档 · 主机侧 SSH 路径（不是 Hark 云端入口）
+
+下面两节是早期「Hark 经 SSH 到主机上的 Codex」设想，保留作主机侧步骤。它不是当前 Hark 客户端的接入方式。当前客户端走上一节的远程 MCP，而且第 2 步还没开始。
+
+### 主机侧只读拟稿
 
 在主机上用 Hark 将登录的 SSH 账号完成 Codex CLI 登录，再从仓库根目录注册 stdio relay，并保持 Mock 后端运行。这个阶段无需配置审批端点或令牌。 [Codex MCP 配置文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 
@@ -120,7 +128,7 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PB_ROOT" -- \
 2. 发出自然语言任务「用 `phonebridge-v04` 确认当前是 Mock，查找合成联系人 `contact-01`，在回复里拟一条『测试消息』，回读当前 Mock 屏幕和记录数。只调用 `phone_status`、`intent_run` 的 `contacts.lookup` 和 `phone_inspect`，不要改变设备状态、创建审批或提交消息。」
 3. 在 Hark 中核对 Codex 实际调用的工具、返回的合成联系人和回读结果。退出这次 SSH/Codex 会话，保持主机后端运行，从 Hark 重连并再次回读。记录工具发现、真实工具调用、回读和重连的结果。若 SSH、Codex 工具发现或模型调用失败，记录具体失败环节。
 
-## Hark 现场第二步 · 独立账号审批的 Mock 提交
+### 主机侧独立账号审批的 Mock 提交
 
 第一步通过后，在已验收独立账号审批通道的 macOS 主机上，用 Mock 单独跑合成提交。Hark/Codex 使用服务账号，审批在另一个 macOS 账号完成。先退出已连接的 Codex 会话并停止第一步的 Mock 后端。保持 `PB_MCP_DIR` 不变，服务用同一 relay 地址重新启动。审批套接字使用独立的空目录，台账使用仅服务账号可访问的目录。服务与审批终端分别从可信来源载入同一 `PB_HARK_TOKEN`，Codex 会话无需该变量。
 
@@ -142,6 +150,6 @@ PB_STATE_DIR="$(mktemp -d /tmp/pb-state.XXXXXX)"
 2. 在审批账号终端使用 `python3 -m phonebridge.cli --approval-socket "$PB_APPROVAL_SOCKET" --approval-hosted approvals list --socket-owner-uid "$PB_SERVICE_UID" --token-env PB_HARK_TOKEN` 核对联系人与正文。`PB_APPROVAL_SOCKET` 是服务侧的审批套接字绝对路径，`PB_SERVICE_UID` 是服务账号 UID。确认后把 `list` 换为 `approve "$PB_APPROVAL_ID"`，或用 `deny "$PB_APPROVAL_ID"` 拒绝提案。
 3. 在 Hark 中指示 Codex 执行已批准的操作一次，并回读该联系人会话。核对刚好新增一条匹配记录，且结果包含 `simulated: true`、`real_message_sent: false`。回执不明时先回读，仍不明就交给操作者核验。
 
-两个 Hark 现场步骤均待实际运行。跨 UID 审批与主机侧自动化的已有证据见 [测试报告](test-report.md)。
+上面两节主机侧步骤均待实际运行。跨 UID 审批与主机侧自动化的已有证据见 [测试报告](test-report.md)。
 
 其他 Agent 可以配置同一个 stdio 启动命令，兼容性按客户端分别验证。DeepSeek API 如需使用，由上层 Agent 单独接入。PhoneBridge 执行器只接收 MCP 调用。

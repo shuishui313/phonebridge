@@ -4,9 +4,11 @@
 
 [PR #1](https://github.com/shuishui313/phonebridge/pull/1) 已合并，基线是 `3ea4115`。主机侧完整链路仍是 `python3 scripts/hark-codex-spike.py --deterministic` 的 51 项；裸跑 33 项不算完整通过。真实 Codex CLI 的只读 MCP 注入已在本机复跑。
 
-**更正：** 不能再让用户去 Hark 设置里打开 Codex Computer Use，或把 `codex exec` 粘进 Hark 做本机执行。当时看到的列表是 macOS 已安装的应用，不是 Hark 的设置项。Hark 的命令跑在它自己的云端沙箱；Mac 外壳目前只向沙箱开放定位这一项设备权限。Codex Computer Use 属于 Codex，Hark 拿不到那份本机执行能力。
+**更正：** 不能再让用户去 Hark 设置里打开本机的桌面控制程序，或把 `codex exec` 粘进 Hark 做本机执行。当时看到的列表是本机已安装的应用，不是 Hark 的设置项。Hark 的命令跑在它自己的云端沙箱；Mac 外壳目前只向沙箱开放定位这一项设备权限。那个桌面控制程序属于本机的编码工具，Hark 拿不到那份本机执行能力。
 
-**第 1 步已在本地完成：** `python3 -m phonebridge.remote_readonly` 是独立进程的 Streamable HTTP 只读 MCP。只绑定 `127.0.0.1`，驱动写死为 Mock，只注册三个工具，`intent_run` 只放行 `contacts.lookup`。令牌用 HMAC 保存，只从 `Authorization: Bearer` 读取。没有开隧道，没有改系统设置。测试见 `tests/test_remote_readonly.py` 和 [测试报告](docs/test-report.md)。
+**第 1 步已在本地完成：** `python3 -m phonebridge.remote_readonly` 是独立进程的 Streamable HTTP 只读 MCP。只绑定 `127.0.0.1`，不导入设备驱动、审批或提交代码，只注册三个工具，`intent_run` 只放行 `contacts.lookup`。令牌读入后从进程环境删除，只留 HMAC，请求只认 `Authorization: Bearer`。限流在鉴权之前。审计文件是 0600，目录必须已经是 0700。`Host` 默认只接受回环。没有开隧道，没有改系统设置。测试见 `tests/test_remote_readonly.py` 和 [测试报告](docs/test-report.md)。
+
+**另排，不在这个 PR：** 上一轮评审里还没做的几项留到后面：`--verify-evidence` 仍接受旧的跨 UID 证据（以后用代码版本和判据摘要，对不上就报证据过期）；设备标识和本地日志的清理；真实模型的措辞；CI 里的跳过测试；`resume_after_readback` 入口；确定性客户端打进生产包。这次只修远程只读这一条。主机侧 SSH 回环测试偶发竞态是原有问题，失败时照实记录，不算通过。
 
 **第 2 步还没做，要先评审：** Hark 可以注册 `streamable_http` 远程 MCP，但地址必须是 HTTPS，URL 不能带令牌。令牌放在 Hark 保险箱里注入，只发给指定隧道域名；临时域名一变就要重新注册。验证完要在 Hark 删除 MCP 和令牌、关隧道、作废令牌。开隧道前需要单独安全评审和用户批准。通过后证明的是云端只读调用 Mock，不是本机执行，也不包含写操作。写操作是否走这条线另开评审。清单见 [Hark 接入](docs/hark-codex.md)。
 
@@ -20,13 +22,13 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 ### 2026-11-12 本机复核
 
-在用户的 Mac（worker phonebridge-mac）上，以 `b0aeafc` 为基线重新执行。历史段落里的「51 项」和「托管审批 13 项」是当时那一轮的记录，不能再当成当前裸跑命令的输出。
+在用户的 Mac 上，以 `b0aeafc` 为基线重新执行。历史段落里的「51 项」和「托管审批 13 项」是当时那一轮的记录，不能再当成当前裸跑命令的输出。
 
 - **计数**：带 `--deterministic`（或同时传入中断客户端）时，直连和临时 SSH 回环都是 `check_count: 51`、`host_chain_passed: true`、9 次会话、四类证据都 `verified`。不带中断客户端是 33 项、5 次会话、`partial_chain_passed: true`，中断证据未产生。这 18 项差是中断阶段，不是被删掉的判据。`b0aeafc` 没有改 spike 的判据清单；它让裸跑在中断未跑时仍把 `host_chain_passed` 标成 true。现已改成只有中断证据为真才算完整通过。
 - **托管审批**：`scripts/hosted-approval-spike.py` 现为 14 项，`hosted_acl_verified: true`、`hosted_passed: true`、`cross_uid_process_verified: false`。多出的一项是 `b0aeafc` 新增的 `directory_acl_revoked_on_close`。通道 A 仍是 13 项，`channel_a_passed: true`。
 - **模拟器**：同一台已启动的 iPhone 18 Pro 上，XCUITest 4 项 `TEST SUCCEEDED`，拟稿 `g1_passed: true`，提交拦截 `guard_passed: true`，可写验收 `g2_passed: true`、`check_count: 36`。
 - **真实 Codex**：CLI `0.167.0-alpha.3.2` 已登录。当前 inline MCP 命令连续三次 `phone_status` 都注入成功。把命令故意配回「Python 参数再带一个 Python」时，模型回合没有工具调用。注入问题与防重是两件事，详见 [Hark 接入](docs/hark-codex.md)。
-- **Hark**：本机是 Mac 应用 0.1.23。下面「打开 Codex Computer Use 再粘贴命令」的说法已经作废，更正见文首 2026-11-12 下午的接手点。
+- **Hark**：本机是 Mac 应用 0.1.23。下面「打开桌面控制程序再粘贴命令」的说法已经作废，更正见文首 2026-11-12 下午的接手点。
 - **偶发失败**：全套第一次 `test_full_host_chain_with_deterministic_codex_client` 失败，退出码 1，`check_count` 仍是 51，成功／失败／重连三类 `verified` 为 false，而 `interruption.verified` 被脚本写成 true。随后单独 6 次和第二次全套都通过。审批套接字处理线程原来 3 秒就放弃还没写完的请求；现改为 30 秒，并用延迟 4 秒仍能批准的测试钉住。中断证据也不再无条件标成已验证。修复后全套 **232** 项通过。
 
 ### 本日进展
