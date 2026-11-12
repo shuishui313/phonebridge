@@ -109,7 +109,9 @@ def main() -> int:
             return 1
         if args.ssh_precheck_only:
             print(json.dumps({
-                "host_chain_passed": True,
+                "host_chain_passed": False,
+                "partial_chain_passed": False,
+                "chain_scope": "ssh_precheck",
                 "ssh_loopback_precheck": True,
                 "ssh_loopback_port": port,
                 "ssh_loopback_command": "127.0.0.1 key-only ephemeral sshd",

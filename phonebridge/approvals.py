@@ -114,7 +114,10 @@ class ApprovalEndpoint:
         reconcile_submission = self.reconcile_submission
 
         class Handler(socketserver.StreamRequestHandler):
-            timeout = 3
+            # A loaded host can take longer than a couple of seconds to schedule
+            # the approval client. Dropping the socket early looks like a lost
+            # approval and the spike then continues with a half-written ledger.
+            timeout = 30
 
             def handle(self):
                 trusted = (required_uid is None
