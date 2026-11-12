@@ -1,13 +1,16 @@
 import json
 import os
+import socket
 import stat
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from phonebridge.approvals import ApprovalEndpoint, approval_request
 from phonebridge.core import PhoneBridge
+from phonebridge.mcp import write_message
 
 
 class ApprovalSocketTests(unittest.TestCase):
@@ -66,6 +69,21 @@ class ApprovalSocketTests(unittest.TestCase):
 
     def test_unknown_action(self):
         self.assertFalse(approval_request(self.path, "shutdown")["ok"])
+
+    def test_delayed_request_is_still_approved(self):
+        """The server must outwait a client that is slow to write the request."""
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(15)
+        try:
+            conn.connect(self.path)
+            time.sleep(4)
+            with conn.makefile("rwb") as stream:
+                write_message(stream, {"action": "approve", "approval_id": self.op})
+                data = stream.readline()
+        finally:
+            conn.close()
+        response = json.loads(data)
+        self.assertTrue(response.get("approved"), response)
 
 
 if __name__ == "__main__": unittest.main()

@@ -13,6 +13,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -34,6 +35,89 @@ def free_port() -> int:
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, capture_output=True, text=True, encoding="utf-8", **kwargs)
+
+
+def find_sshd() -> str | None:
+    for candidate in ("/usr/sbin/sshd", "/usr/bin/sshd"):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which("sshd")
+
+
+def sshd_options(work: Path, authorized: Path) -> list[str]:
+    # ChallengeResponseAuthentication is rejected by OpenSSH versions that
+    # dropped the keyword. It is included for older sshd and removed below
+    # when `sshd -t` reports it as a bad option.
+    return [
+        "ListenAddress 127.0.0.1",
+        f"HostKey {work / 'hostkey'}",
+        f"PidFile {work / 'sshd.pid'}",
+        f"AuthorizedKeysFile {authorized}",
+        "PubkeyAuthentication yes",
+        "PasswordAuthentication no",
+        "KbdInteractiveAuthentication no",
+        "ChallengeResponseAuthentication no",
+        "UsePAM no",
+        # The key file lives under the world-writable temp directory. Linux
+        # sshd rejects that when StrictModes walks every parent directory.
+        "StrictModes no",
+        f"AllowUsers {getpass.getuser()}",
+        "LogLevel VERBOSE",
+    ]
+
+
+def write_sshd_config(path: Path, options: list[str], rejected: set[str]) -> None:
+    kept = [line for line in options if line.split()[0] not in rejected]
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def ensure_privsep_dir(stderr_text: str) -> bool:
+    """Create the compiled-in privsep directory when passwordless sudo can."""
+    match = re.search(r"privilege separation directory: (\S+)", stderr_text, re.I)
+    target = match.group(1) if match else ""
+    if not target and "privsep" not in stderr_text.lower():
+        return False
+    directory = target or "/run/sshd"
+    made = subprocess.run(["sudo", "-n", "mkdir", "-p", directory],
+                          capture_output=True, text=True, timeout=10)
+    if made.returncode != 0:
+        return False
+    mode = subprocess.run(["sudo", "-n", "chmod", "755", directory],
+                          capture_output=True, text=True, timeout=10)
+    return mode.returncode == 0
+
+
+def start_sshd(binary: str, config: Path, port: int, options: list[str]):
+    """Start a key-only sshd, dropping config keywords this build rejects."""
+    rejected: set[str] = set()
+    stderr_text = ""
+    process = None
+    retried_privsep = False
+    for _ in range(len(options) + 1):
+        write_sshd_config(config, options, rejected)
+        probe = run([binary, "-t", "-f", str(config), "-p", str(port)], timeout=10)
+        probe_text = (probe.stderr or "") + (probe.stdout or "")
+        bad = re.search(r"(?:Bad configuration option|Unsupported option): (\S+)", probe_text)
+        if bad and bad.group(1) not in rejected:
+            rejected.add(bad.group(1))
+            continue
+        log_path = config.with_name("sshd.err")
+        log_file = log_path.open("w", encoding="utf-8")
+        process = subprocess.Popen([binary, "-D", "-e", "-f", str(config), "-p", str(port)],
+                                   stdout=subprocess.DEVNULL, stderr=log_file)
+        process._sshd_log = log_file  # keep the handle alive for the daemon
+        time.sleep(0.2)
+        log_file.flush()
+        stderr_text = log_path.read_text(encoding="utf-8", errors="replace")
+        if process.poll() is None:
+            return process, stderr_text
+        if not retried_privsep and ensure_privsep_dir(stderr_text):
+            retried_privsep = True
+            continue
+        if not bad:
+            return process, stderr_text or probe_text
+    return process, stderr_text
 
 
 def main() -> int:
@@ -58,22 +142,16 @@ def main() -> int:
         authorized.chmod(0o600)
         port = free_port()
         config = work / "sshd_config"
-        config.write_text(
-            f"ListenAddress 127.0.0.1\n"
-            f"HostKey {work / 'hostkey'}\n"
-            f"PidFile {work / 'sshd.pid'}\n"
-            f"AuthorizedKeysFile {authorized}\n"
-            "PasswordAuthentication no\n"
-            "KbdInteractiveAuthentication no\n"
-            "ChallengeResponseAuthentication no\n"
-            "UsePAM no\n"
-            "StrictModes yes\n"
-            f"AllowUsers {getpass.getuser()}\n"
-            "LogLevel VERBOSE\n",
-            encoding="utf-8",
-        )
-        sshd = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e", "-f", str(config), "-p", str(port)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sshd_binary = find_sshd()
+        if sshd_binary is None:
+            print(json.dumps({
+                "host_chain_passed": False,
+                "ssh_loopback_precheck": False,
+                "blocker": "sshd_not_installed",
+                "error": "No sshd binary on PATH or in /usr/sbin",
+            }, ensure_ascii=False, indent=2))
+            return 1
+        sshd, sshd_stderr = start_sshd(sshd_binary, config, port, sshd_options(work, authorized))
         known_hosts = work / "known_hosts"
         keyscan_output = ""
         for _ in range(100):
@@ -104,12 +182,17 @@ def main() -> int:
                 "host_chain_passed": False,
                 "ssh_loopback_precheck": False,
                 "error": "temporary localhost sshd did not accept key-based SSH",
+                "sshd": sshd_binary,
+                "sshd_exit": None if sshd is None else sshd.poll(),
                 "stderr": (precheck.stderr if precheck else "")[-1000:],
+                "sshd_stderr": sshd_stderr[-1000:],
             }, ensure_ascii=False, indent=2))
             return 1
         if args.ssh_precheck_only:
             print(json.dumps({
-                "host_chain_passed": True,
+                "host_chain_passed": False,
+                "partial_chain_passed": False,
+                "chain_scope": "ssh_precheck",
                 "ssh_loopback_precheck": True,
                 "ssh_loopback_port": port,
                 "ssh_loopback_command": "127.0.0.1 key-only ephemeral sshd",

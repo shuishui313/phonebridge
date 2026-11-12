@@ -26,7 +26,7 @@ codex mcp add phonebridge-v04 --env "PYTHONPATH=$PWD" -- \
   "$PHONEBRIDGE_PYTHON" -m phonebridge.cli --approval-socket "$PHONEBRIDGE_SOCKET" serve
 ```
 
-打开新的 Codex 会话，通过 `/mcp` 确认 14 个工具（原 12 项设备与消息工具，加上 `intents_list` / `intent_run` 两个通道 A 只读意图工具）。每个服务进程需要自己的审批套接字。SSH 链路需要跨断线保持状态时，改用 `backend --socket <私有 0700 目录>/mcp.sock` 启动常驻后端，再让客户端以 `python3 -m phonebridge.relay stdio --socket <同一路径>` 接入；每次连接重建 MCP 会话，审批与台账状态留在后端。`scripts/hark-codex-spike.py` 与 `scripts/hark-codex-ssh-loopback-spike.py` 可复跑成功／失败／中断／重连四类主机侧证据（直连与临时 key-only 本机 SSH 回环，确定性客户端，不调用真实模型）。Hark 客户端 UI、真实 SSH 会话与真实 Codex 模型的工具编排仍待现场验证，DeepSeek API 可由上层 Agent 单独接入。[Codex MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) · [Hark 接入步骤](docs/hark-codex.md) · [测试报告](docs/test-report.md)
+打开新的 Codex 会话，通过 `/mcp` 确认 14 个工具（原 12 项设备与消息工具，加上 `intents_list` / `intent_run` 两个通道 A 只读意图工具）。每个服务进程需要自己的审批套接字。SSH 链路需要跨断线保持状态时，改用 `backend --socket <私有 0700 目录>/mcp.sock` 启动常驻后端，再让客户端以 `python3 -m phonebridge.relay stdio --socket <同一路径>` 接入；每次连接重建 MCP 会话，审批与台账状态留在后端。`python3 scripts/hark-codex-spike.py --deterministic` 与带同样参数的 SSH 回环脚本复跑成功／失败／中断／重连四类主机侧证据（51 项，`host_chain_passed: true`）。不带中断客户端的裸跑是 33 项，只表示部分链路。真实 Codex CLI 的只读 MCP 注入已在本机复跑；Hark 窗口回读仍待一条合成任务。DeepSeek API 可由上层 Agent 单独接入。[Codex MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) · [Hark 接入步骤](docs/hark-codex.md) · [测试报告](docs/test-report.md)
 
 ## 试一次模拟发送
 

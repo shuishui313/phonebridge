@@ -106,6 +106,8 @@ def main() -> int:
     parser.add_argument("--codex-path", help="Codex CLI path; auto-detected when omitted")
     parser.add_argument("--interruption-codex-path",
                         help="Deterministic client that drops the execute receipt to produce interruption evidence")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Use the in-repo deterministic clients, including the interruption client")
     parser.add_argument("--python", default=sys.executable, help="Python used for the relay stdio command")
     parser.add_argument("--text", default="Hark SSH probe", help="Synthetic ASCII draft text")
     parser.add_argument("--phase-timeout", type=int, default=300)
@@ -114,6 +116,8 @@ def main() -> int:
 
     if args.transport == "ssh" and not args.ssh_destination:
         parser.error("--ssh-destination is required with --transport ssh")
+    if args.deterministic and (args.codex_path or args.interruption_codex_path):
+        parser.error("--deterministic already selects both clients")
 
     evidence = {
         "checks": {},
@@ -138,6 +142,11 @@ def main() -> int:
     os.chmod(work, 0o700)
     backend = None
     try:
+        if args.deterministic:
+            from phonebridge.deterministic_codex import write_deterministic_clients
+            normal_client, interrupt_client = write_deterministic_clients(work)
+            args.codex_path = str(normal_client)
+            args.interruption_codex_path = str(interrupt_client)
         codex = find_codex(args.codex_path)
         if not codex:
             raise RuntimeError("Codex CLI not found; pass --codex-path")
@@ -152,7 +161,8 @@ def main() -> int:
             ROOT,
             repo_copy,
             ignore=shutil.ignore_patterns(".git", ".codebuddy", "__pycache__",
-                                          "*.pyc", ".pytest_cache"),
+                                          "*.pyc", ".pytest_cache", "build",
+                                          ".venv", "dist", "*.xcresult"),
         )
 
         backend_command = [
@@ -252,8 +262,9 @@ def main() -> int:
         approval = subprocess.run(approval_command, capture_output=True, text=True,
                                   encoding="utf-8", env=approval_env, timeout=20)
         approval_payload = json.loads(approval.stdout) if approval.stdout.strip() else {}
-        check("trusted_side_approval", approval.returncode == 0
-              and approval_payload.get("approved") is True, approval_payload)
+        if not check("trusted_side_approval", approval.returncode == 0
+                     and approval_payload.get("approved") is True, approval_payload):
+            raise RuntimeError(f"trusted approval failed: {approval_payload!r}")
 
         execute_prompt = (
             "Use ONLY the phonebridge MCP tool phone_execute_operation. "
@@ -334,9 +345,10 @@ def main() -> int:
             approval2_run = subprocess.run(approval2_command, capture_output=True, text=True,
                                            encoding="utf-8", env=approval_env, timeout=20)
             approval2_payload = json.loads(approval2_run.stdout) if approval2_run.stdout.strip() else {}
-            check("trusted_side_approval_for_interruption",
-                  approval2_run.returncode == 0 and approval2_payload.get("approved") is True,
-                  approval2_payload)
+            if not check("trusted_side_approval_for_interruption",
+                         approval2_run.returncode == 0 and approval2_payload.get("approved") is True,
+                         approval2_payload):
+                raise RuntimeError(f"interruption approval failed: {approval2_payload!r}")
 
             interrupt_prompt = (
                 "Use ONLY the phonebridge MCP tool phone_execute_operation. "
@@ -366,17 +378,21 @@ def main() -> int:
             check("interrupted_operation_replay_rejected",
                   replayed2.get("ok") is not True
                   and replayed2.get("error") == "unknown_or_processed_operation", replayed2)
+            dropped_ok = bool(evidence["checks"].get("interrupted_execute_dropped_before_receipt"))
+            no_duplicate = bool(evidence["checks"].get("interruption_no_duplicate_record"))
+            replay_ok = bool(evidence["checks"].get("interrupted_operation_replay_rejected"))
             interruption_evidence.update({
-                "verified": True,
+                "verified": dropped_ok and no_duplicate and replay_ok,
                 "phase": "interrupted_execute",
                 "operation_id": approval2,
                 "record_count_after_reconnect": len(records_after),
-                "receipt_dropped": True,
-                "replay_rejected": True,
+                "receipt_dropped": dropped_ok,
+                "replay_rejected": replay_ok,
             })
         else:
             interruption_evidence["note"] = (
-                "Pass --interruption-codex-path to inject a dropped execute receipt."
+                "Pass --deterministic or --interruption-codex-path to inject a dropped execute receipt. "
+                "Without it, host_chain_passed stays false."
             )
         evidence["interruption"] = interruption_evidence
 
@@ -436,7 +452,14 @@ def main() -> int:
 
         bool_checks = [value for key, value in evidence["checks"].items()
                        if isinstance(value, bool) and not key.endswith("_detail")]
-        evidence["host_chain_passed"] = all(bool_checks)
+        # A run that skips the interruption client used to report host_chain_passed
+        # with 33 checks. Those 18 missing checks are the dropped-receipt path,
+        # so only a verified interruption is the full host chain.
+        evidence["partial_chain_passed"] = bool(bool_checks) and all(bool_checks)
+        evidence["chain_scope"] = "full" if interruption_path else "partial"
+        evidence["host_chain_passed"] = (
+            evidence["partial_chain_passed"] and bool(evidence["interruption"]["verified"])
+        )
         evidence["check_count"] = len(bool_checks)
         evidence["hark_client_verified"] = False
         print(json.dumps(evidence, ensure_ascii=False, indent=2))
