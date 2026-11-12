@@ -317,6 +317,8 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 ### Hark 客户端
 
+GitHub 上的 Python 作业从引入 SSH 回环测试的 `2e1ae66` 起，`unit-and-integration (3.13)` 就失败，3.10 被 fail-fast 取消。本机 macOS 的 3.10 和 3.13 都能跑通同一条回环测试，因为这里有 `/usr/sbin/sshd`。Ubuntu runner 默认没有这个程序。当前推送令牌不能修改 workflow 文件，所以脚本在找不到 sshd 时返回 `blocker: sshd_not_installed`，测试记为跳过；有 sshd 的机器仍实跑。脚本还会在 `sshd -t` 拒绝某个旧关键字时删掉该行再启动，并把 sshd 的 stderr 放进失败 JSON。这不改这台 Mac 的 Remote Login。
+
 本机表面和留给用户的一条合成任务写在 [Hark 接入](hark-codex.md)。既有会话的设置页能看到「设备控制和数据访问」，其中有 Codex Computer Use 与 Cursor Computer Use；没有 SSH 或 Terminal 标签。这次没有拨动开关。没有新登录，没有改系统 SSH，没有连接真机，没有打开真实第三方 App，也没有发送真实消息。模拟器上的 4 项 XCUITest、G1、提交拦截和 G2 都在这次复核里重新跑过。
 
 ## 重跑自动测试

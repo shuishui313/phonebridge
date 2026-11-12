@@ -52,6 +52,8 @@ class HarkSpikeHarnessTests(unittest.TestCase):
             payload = json.loads(result.stdout)
         except ValueError:
             self.fail(f"rc={result.returncode} stdout={result.stdout[-1500:]} stderr={result.stderr[-800:]}")
+        if payload.get("blocker") == "sshd_not_installed":
+            self.skipTest(payload.get("error") or "sshd is not installed")
         if result.returncode != 0 and not payload.get("partial_chain_passed"):
             self.fail(
                 f"rc={result.returncode} failed={self._failed_checks(payload)} "
