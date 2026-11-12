@@ -73,7 +73,7 @@ Codex CLI 在 ChatGPT.app 内，版本 `codex-cli 0.167.0-alpha.3.2`，`codex lo
 
 `/Applications/Hark.app` 的 bundle id 是 `com.harklabs.hark.mac`，短版本 `0.1.23`，可执行文件是 Tauri 壳 `hark-desktop`。二进制里有 `device_link`、`hark-device`、`This Mac`、`Computer` 和设备权限问答，会把本机工具以 MCP 帧交给 Hark 页面。没有 `OpenSSH`、`Remote Login` 或 `Codex` 这些字样。已启动的 iPhone 18 Pro Simulator 里没有 Hark。单实例套接字 `/tmp/com_harklabs_hark_mac_si.sock` 能连上，但 1 秒内没有协议横幅，不能把它当成 PhoneBridge 的 MCP。
 
-检查时应用已经停在既有登录会话里，界面是聊天和项目。这次没有新登录、没有在输入框打字、没有发任何消息。系统 22 端口上已有 launchd 拉起的 `SSH-2.0-OpenSSH_10.3`。这次没有打开 Remote Login，也没有改 SSH 配置，更没有用该端口登录。Hark Mac 应用的设备连接走的是它自己的 device link，不是这条系统 SSH。
+检查时应用已经停在既有登录会话里。视图菜单只有 Chat 和 Projects。设置里能看到用量、资料、定时任务、账户、钱包、系统偏好、安全、连接入口和关于；设置标签上的连接入口写成「建立这连」。其下的「设备控制和数据访问」列出本机集成开关，其中有 **Codex Computer Use** 和 **Cursor Computer Use**。设置项、视图菜单和二进制里都没有 SSH 或 Terminal 标签。这次没有拨动这两个开关，没有新登录，没有在输入框打字，没有发任何消息。系统 22 端口上已有 launchd 拉起的 `SSH-2.0-OpenSSH_10.3`。这次没有打开 Remote Login，也没有改 SSH 配置，更没有用该端口登录。
 
 ### 留给用户的一步
 
@@ -111,9 +111,9 @@ print(shlex.join(build_codex_command(
 PY
 ```
 
-如果 Hark 里能看到 Computer 或「这台 Mac」，把打印出的这一整行交给它在本机执行，并在 Hark 里读回结果。期望三次工具都属于 `phonebridge`，`phone_status` 的 `driver` 为 `mock`，`contacts.lookup` 读到合成联系人，`phone_inspect` 的 `messages` 仍为空。同一条命令在普通终端里已经跑通，见上一节。
+在 Hark 菜单打开设置，进入「设备控制和数据访问」。若 **Codex Computer Use** 是关的，由你打开它。然后在 Chat 里把上面打印出的这一整行作为合成任务交给本机执行，并在同一条对话里读回结果。期望三次工具都属于 `phonebridge`，`phone_status` 的 `driver` 为 `mock`，`contacts.lookup` 读到合成联系人，`phone_inspect` 的 `messages` 仍为空。同一条命令在普通终端里已经跑通，见上一节。
 
-3. 如果 Hark 里没有 Computer / 这台 Mac，或它不能在本机跑命令，就停在这一步。上面的 Codex CLI 只读注入已经是可复跑结果。不要为了凑 SSH 路径去打开 Remote Login。
+3. 如果打开开关后 Hark 仍不能在本机跑这条命令，就停在这一步。上面的 Codex CLI 只读注入已经是可复跑结果。不要为了凑 SSH 路径去打开 Remote Login。
 
 这一步如果做成，证明的是：既有 Hark 会话能让本机 Codex 调用 PhoneBridge 只读工具，并把结果留在 Hark 对话里。它不证明系统 SSH、不证明 51 项里的丢回执防重、不证明真实消息发送。防重仍以 `--deterministic` 的 51 项为准。
 
