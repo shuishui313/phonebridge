@@ -58,7 +58,9 @@ def sshd_options(work: Path, authorized: Path) -> list[str]:
         "KbdInteractiveAuthentication no",
         "ChallengeResponseAuthentication no",
         "UsePAM no",
-        "StrictModes yes",
+        # The key file lives under the world-writable temp directory. Linux
+        # sshd rejects that when StrictModes walks every parent directory.
+        "StrictModes no",
         f"AllowUsers {getpass.getuser()}",
         "LogLevel VERBOSE",
     ]
@@ -67,6 +69,23 @@ def sshd_options(work: Path, authorized: Path) -> list[str]:
 def write_sshd_config(path: Path, options: list[str], rejected: set[str]) -> None:
     kept = [line for line in options if line.split()[0] not in rejected]
     path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def ensure_privsep_dir(stderr_text: str) -> bool:
+    """Create the compiled-in privsep directory when passwordless sudo can."""
+    match = re.search(r"privilege separation directory: (\S+)", stderr_text, re.I)
+    target = match.group(1) if match else ""
+    if not target and "privsep" not in stderr_text.lower():
+        return False
+    directory = target or "/run/sshd"
+    made = subprocess.run(["sudo", "-n", "mkdir", "-p", directory],
+                          capture_output=True, text=True, timeout=10)
+    if made.returncode != 0:
+        return False
+    mode = subprocess.run(["sudo", "-n", "chmod", "755", directory],
+                          capture_output=True, text=True, timeout=10)
+    return mode.returncode == 0
 
 
 def start_sshd(binary: str, config: Path, port: int, options: list[str]):
@@ -74,6 +93,7 @@ def start_sshd(binary: str, config: Path, port: int, options: list[str]):
     rejected: set[str] = set()
     stderr_text = ""
     process = None
+    retried_privsep = False
     for _ in range(len(options) + 1):
         write_sshd_config(config, options, rejected)
         probe = run([binary, "-t", "-f", str(config), "-p", str(port)], timeout=10)
@@ -92,6 +112,9 @@ def start_sshd(binary: str, config: Path, port: int, options: list[str]):
         stderr_text = log_path.read_text(encoding="utf-8", errors="replace")
         if process.poll() is None:
             return process, stderr_text
+        if not retried_privsep and ensure_privsep_dir(stderr_text):
+            retried_privsep = True
+            continue
         if not bad:
             return process, stderr_text or probe_text
     return process, stderr_text

@@ -55,9 +55,11 @@ class HarkSpikeHarnessTests(unittest.TestCase):
         if payload.get("blocker") == "sshd_not_installed":
             self.skipTest(payload.get("error") or "sshd is not installed")
         if result.returncode != 0 and not payload.get("partial_chain_passed"):
+            detail = {key: payload.get(key) for key in (
+                "error", "blocker", "sshd", "sshd_exit", "stderr", "sshd_stderr", "exception",
+            ) if payload.get(key)}
             self.fail(
-                f"rc={result.returncode} failed={self._failed_checks(payload)} "
-                f"exception={payload.get('exception')}"
+                f"rc={result.returncode} failed={self._failed_checks(payload)} detail={detail}"
             )
         return result, payload
 
