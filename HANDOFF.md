@@ -6,6 +6,17 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 本次重跑的结果与未验证项见 [测试报告](docs/test-report.md)。当前测试目标 App 为自有合成夹具中的私信与信息流场景（对标 WhatsApp 与 X 的交互形态），v0.4 工具名已通用化为 `contacts_list` / `contacts_open` / `message_prepare`，旧名保留为可调用别名；正文和附录中提及「微信」或 `wechat_*` 的地方均为历史快照描述。[产品需求](docs/product-requirements.md) · [安全边界](docs/security.md)
 
+### 2026-11-12 本机复核
+
+在用户的 Mac（worker phonebridge-mac）上，以 `b0aeafc` 为基线重新执行。历史段落里的「51 项」和「托管审批 13 项」是当时那一轮的记录，不能再当成当前裸跑命令的输出。
+
+- **计数**：带 `--deterministic`（或同时传入中断客户端）时，直连和临时 SSH 回环都是 `check_count: 51`、`host_chain_passed: true`、9 次会话、四类证据都 `verified`。不带中断客户端是 33 项、5 次会话、`partial_chain_passed: true`，中断证据未产生。这 18 项差是中断阶段，不是被删掉的判据。`b0aeafc` 没有改 spike 的判据清单；它让裸跑在中断未跑时仍把 `host_chain_passed` 标成 true。现已改成只有中断证据为真才算完整通过。
+- **托管审批**：`scripts/hosted-approval-spike.py` 现为 14 项，`hosted_acl_verified: true`、`hosted_passed: true`、`cross_uid_process_verified: false`。多出的一项是 `b0aeafc` 新增的 `directory_acl_revoked_on_close`。通道 A 仍是 13 项，`channel_a_passed: true`。
+- **模拟器**：同一台已启动的 iPhone 18 Pro 上，XCUITest 4 项 `TEST SUCCEEDED`，拟稿 `g1_passed: true`，提交拦截 `guard_passed: true`，可写验收 `g2_passed: true`、`check_count: 36`。
+- **真实 Codex**：CLI `0.167.0-alpha.3.2` 已登录。当前 inline MCP 命令连续三次 `phone_status` 都注入成功。把命令故意配回「Python 参数再带一个 Python」时，模型回合没有工具调用。注入问题与防重是两件事，详见 [Hark 接入](docs/hark-codex.md)。
+- **Hark**：本机是 Mac 应用 0.1.23，设备能力是 device link / This Mac / Computer，没有字面 SSH 控件。窗口里的合成回读还差用户发一条任务。
+- **偶发失败**：全套第一次 `test_full_host_chain_with_deterministic_codex_client` 失败，退出码 1，`check_count` 仍是 51，成功／失败／重连三类 `verified` 为 false，而 `interruption.verified` 被脚本写成 true。随后单独 6 次和第二次全套都通过。审批套接字处理线程原来 3 秒就放弃还没写完的请求；现改为 30 秒，并用延迟 4 秒仍能批准的测试钉住。中断证据也不再无条件标成已验证。修复后全套 **232** 项通过。
+
 ### 本日进展
 
 - 昨日收工交接为 `4add3cd`，同事 review 记录为 `fd65db6`（`docs/reviews/711ab2a.md`）。今日远端无新提交、评审方未对 4 个决策点回复；按「减少过程性提问」的既有偏好，**按保守方向自主决断**并写入实现，评审方可复核或推翻。逐条映射见 [评审回复](docs/reviews/711ab2a-response.md)。
@@ -29,7 +40,7 @@ v0.4 和 v0.2 原始 ZIP 已取回并校验。以 `4ff8df5` 为起点整合，v0
 
 基于 `ab853ca` 的复审修复已落实到代码。托管审批使用专用目录并回收 ACL，重启从台账恢复未决操作的暂停，Hark 统一接常驻 relay，通道 A 只公布当前驱动可用的合成能力。先按手册用真实 Hark 和 Codex 做 Mock 只读联调。新版跨 UID 审批与 Simulator 联合可写验收随后进行，上一版本的现场结果作为历史证据保留。 [复审修复记录](docs/reviews/ab853ca-response.md) · [Hark 接入步骤](docs/hark-codex.md)
 
-1. **步骤 3 · Hark 客户端端到端（G2 剩余阻塞项）**：主机侧链路已通过（relay 重连、直连与 SSH 回环、四类证据、51 项判据、9 次会话），G2 剩余阻塞项收敛为在 Hark 客户端发起真实 SSH 会话与自然语言任务，并确认真实 Codex 模型能稳定发现并调用 MCP 工具、在 Hark 内回读结果；真实模型工具注入本机不稳定，须在现场环境重新验收，先单列连接／编排问题再判定防重。通道 A 可并行验证自有 App 的无副作用意图。该项通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [Hark 接入步骤](docs/hark-codex.md) · [实现计划](docs/implementation-plan.md)
+1. **步骤 3 · Hark 窗口回读（G2 剩余阻塞项）**：完整主机链路用 `python3 scripts/hark-codex-spike.py --deterministic` 复跑，直连与 SSH 回环都是 51 项、`host_chain_passed: true`。裸跑的 33 项只算部分链路。真实 Codex 的只读 MCP 注入已在本机连续通过；旧的「工具未注入」能用重复的 Python 参数稳定复现，且请求进不了 PhoneBridge。本机 Hark 是 Mac 应用里的 Computer / device link，没有字面 SSH 控件。剩下的用户动作是在既有 Hark 会话里发一条合成只读任务，命令和期望见 [Hark 接入步骤](docs/hark-codex.md)。不要为此打开 Remote Login 或连接真机。通道 A 可并行验证自有 App 的无副作用意图。该项通过且核心 API 稳定后，再排期主机托管的 Swift 原型和远程 MCP。 [实现计划](docs/implementation-plan.md)
 2. **真实跨账号进程现场验收 · 已完成（2026-11-11）**：操作者执行 `cd <repo> && python3 scripts/cross-uid-approval-spike.py --approver <approver> --authenticate` 取得 `outcome: "passed"`、`cross_uid_process_verified: true`、`approver_process_real: true`、`check_count: 15`，15 项判据全过；评审 `711ab2a` 的 P1-4 真实跨账号验收补齐。复跑时脚本本体不要用 `sudo`（会使服务侧变成 root，改变两个非特权账号分离的语义），密码由 sudo 直接提示一次，脚本不读取、不存储、不转发。`--verify-evidence <PATH>` 可对保存的现场 JSON 做只读结构复核，彩排与篡改结果会被拒；它不重新执行验收，也不能证明文件来源。**后续仍需**：真机与独立审批设备上的审批通道验证，本次只覆盖 macOS 本机两个非特权账号。 [评审回复](docs/reviews/711ab2a-response.md) · [测试报告](docs/test-report.md)
 3. **G1 剩余项**：在隔离 Codex 会话中按 `scripts/xcode-mcp-draft-spike.py` 的等价工具序列复核自然语言拟稿，单独记录结果；该项仍为待办，不与自动化脚本结果合并。 [测试报告](docs/test-report.md)
 4. **边界不变**：真实消息发送始终禁用；`--allow-fixture-virtual-submit` 只是自有合成夹具内的验收开关，默认关闭，必须与实际令牌和持久化台账同时启用，不打开真实第三方 App、不接真机。可写联调与真机阶段必须用 `--require-approval-isolation` 启动并配置实际令牌、指定 `--submission-state`；同账号下令牌也不是强隔离。提交结果不明确时先回读，仍无法判定就持久暂停写动作、只读放行，禁止自动重发。G3a 经用户另行授权后开始真机只读取证；G3b 在 G2 通过、只读证据齐备、审批已外置并取得单独写入授权后，才在自有 App 上验证受控写入；目标第三方 App 另行逐能力验证，端侧独立运行由 G4 单独验收，金融与支付默认禁用。真机、真实第三方 App、独立审批设备、真实 Codex 模型的 MCP 编排、真实 App Intents／快捷指令与系统或第三方 App 的公开动作、Hark 客户端端到端联调仍未验证（主机侧链路、合成只读意图、外部托管具名 ACL 与 macOS 本机两个非特权账号之间的真实跨 UID 审批进程已分别通过，不等于 Hark 完整联调、真实意图通道、真机审批通道或真实跨设备审批通过）。 [安全边界](docs/security.md) · [iOS 可行性](docs/ios-feasibility.md)

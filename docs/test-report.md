@@ -259,6 +259,66 @@ G2 的阻塞项「真实驱动提交前拦截的完整可写验收」此前一�
 
 新版真实跨 UID 审批、Hark 客户端、真实 Codex 模型、Apple Simulator 和 XCUITest 本轮未重跑。上一版本的现场验收记录保留。真机、真实 App Intents、真实第三方 App 和实际消息发送仍未验证。代码修复与后续验收顺序见 [复审修复记录](reviews/ab853ca-response.md)。
 
+## 2026-11-12 本机复核
+
+环境：用户的 Mac（worker phonebridge-mac），基线 `b0aeafc`，Python 3.10.10，Xcode 27.2（27B52），已启动的 iPhone 18 Pro Simulator。只使用合成联系人和合成正文。原始 JSON 含本机路径，不入库。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `python3 -m unittest discover -s tests -v`（修复前，第一轮） | 230 项里 229 项通过，1 项失败。失败的是 `test_full_host_chain_with_deterministic_codex_client`，子进程退出码 1，`check_count` 仍为 51，`host_chain_passed: false`。成功、失败、重连三类 `verified` 为 false，`interruption.verified` 为 true。断言只保留了 stdout 末尾 3000 字，失败的判据名被截掉。台账数组以两条 `prepared` 结束，后面没有这次中断执行的 `approved` / `dispatching` / `completed`。 |
+| 同上（修复前，第二轮） | 230 项全部通过，约 27 秒。 |
+| `python3 scripts/hark-codex-spike.py` 用确定性客户端、带中断客户端，单独重复 6 次 | 6 次都是退出码 0、`check_count: 51`、`host_chain_passed: true`，失败判据为空。当时 `build/` 已有约 1.7GB，每次都整仓复制，6 次合计约 258 秒。 |
+| `scripts/hark-codex-ssh-loopback-spike.py` 带中断客户端 | 退出码 0，`ssh_loopback_precheck: true`，`check_count: 51`，`host_chain_passed: true`，9 次会话，四类证据都为真，`hark_client_verified` 与 `hark_ui_verified` 都为 false。 |
+| 同一回环脚本不带中断客户端 | 退出码 0，`check_count: 33`，`host_chain_passed: true`，`interruption.verified: false`，5 次会话。这是修复前的口径。 |
+| `python3 scripts/hosted-approval-spike.py` | 退出码 0，`check_count: 14`，`hosted_passed: true`，`hosted_acl_verified: true`，`cross_uid_process_verified: false`。14 个键全部为真，其中包括 `directory_acl_revoked_on_close`。 |
+| `python3 scripts/intent-channel-spike.py` | 退出码 0，`check_count: 13`，`channel_a_passed: true`。 |
+| `python3 -m unittest discover -s legacy/v0.2 -v` | 10 项通过。 |
+| `scripts/apple-simulator-test.sh` | `Executed 4 tests, with 0 failures`，`TEST SUCCEEDED`，`APPLE SIMULATOR XCTEST PASS`。 |
+| `scripts/xcode-mcp-draft-spike.py` | `g1_passed: true`，`record_increment: false`，工具数 14。 |
+| `scripts/xcode-mcp-submit-guard-spike.py` | `guard_passed: true`，`submit_tap_error: submission_requires_approval`，`record_increment: false`。 |
+| `scripts/xcode-mcp-g2-writable-spike.py` | `g2_passed: true`，`check_count: 36`，36 个布尔判据没有假值。 |
+| `python3 -m unittest discover -s tests -v`（本轮修复之后） | 232 项通过，0 失败，约 19 秒。新增的是延迟 4 秒的审批请求，以及「33 项部分链路不得标成完整通过」。 |
+
+### 51 与 33
+
+`scripts/hark-codex-spike.py` 的 `check_count` 是当次写入的布尔判据个数。每个普通阶段 4 项（令牌不在环境、令牌不在命令行、只用 phonebridge、没有 shell），中断阶段 3 项，再加上十几项固定判据。9 个阶段全跑是 51。去掉 4 个中断阶段和 3 项固定中断判据就是 33。`b0aeafc` 的 diff 没有改这个脚本的判据清单。交接文档把 51 写成当前结果，是因为当初的记录带了 `--interruption-codex-path`；2026-11-12 的裸跑没有传这个参数，于是得到 33，而且当时 `host_chain_passed` 不看中断证据，所以仍是 true。
+
+修复后：`chain_scope: full` 且 `host_chain_passed: true` 只在中断三项都为真时出现，计数是 51。裸跑是 `chain_scope: partial`、`partial_chain_passed: true`、`host_chain_passed: false`、`check_count: 33`，进程退出码 1。`interruption.verified` 改为由 `interrupted_execute_dropped_before_receipt`、`interruption_no_duplicate_record`、`interrupted_operation_replay_rejected` 三项共同决定，不再在路径跑完后无条件写成 true。`--deterministic` 会在临时目录写好两个确定性客户端再跑完整链路。
+
+### 托管审批为什么从 13 变成 14
+
+`b0aeafc` 把审批套接字放进专用空目录，并在 `endpoint.close()` 之后增加判据 `directory_acl_revoked_on_close`。README 已经写成 14。HANDOFF 和本报告更早的章节仍写着引入当天的 13，那是当时的结果。当前复跑是 14，没有少掉旧判据。对端 UID 仍由注入函数模拟，所以 `cross_uid_process_verified` 保持 false。
+
+### 主机链路偶发失败
+
+第一轮全套只有这一项失败，现象符合「批准请求没被服务端收下，脚本仍继续跑完」：前面的执行没有留下 `completed`，回读和重放判据跟着失败，中断对象却被写成已验证。审批处理线程的 `timeout` 原来是 3 秒，客户端默认等待是 5 秒。机器同时在跑全套、字符串扫描和探测时，客户端可能在 3 秒内还没把请求写完，服务端已经关掉连接。随后的单独重跑都通过，说明它是间歇的，不是 51 项被删掉。
+
+已做的修复：
+
+- 审批处理超时改为 30 秒。`tests/test_approvals.py` 新增 `test_delayed_request_is_still_approved`：连上后先等 4 秒再写批准请求，必须返回 `approved: true`。
+- 可信侧批准失败时 spike 直接抛错，不再带着一份看起来跑完的 JSON 退出。
+- 复制给客户端的仓库跳过 `build/`、`.venv`、`dist` 和 `*.xcresult`，避免和正在写的 DerivedData 抢磁盘。
+
+### 真实 Codex 的 MCP 注入
+
+与 51 项防重分开测。直接对 relay 握手：`tools/list` 14 个工具，`phone_status` 为 `ok: true`、`driver: mock`。然后用当前的 `build_codex_command` 连续三次只要求调用 `phone_status`：
+
+| 次序 | 耗时 | 退出码 | 工具 |
+| --- | --- | --- | --- |
+| 1 | 48.4 秒 | 0 | `phonebridge` / `phone_status`，`ok: true`，`driver: mock` |
+| 2 | 47.2 秒 | 0 | 同上 |
+| 3 | 43.0 秒 | 0 | 同上 |
+
+三次 stderr 都有 `failed to refresh available models: request timed out`。第三次还有一条与 `https://chatgpt.com/backend-api/ps/mcp` 相关的传输关闭记录。PhoneBridge 的工具调用仍然完成。把配置改回「`command` 和 `args` 都从 Python 开始」后，退出码是 0，`tools` 为空，耗时 32.4 秒。这就是此前「工具未注入」的可复现形态：MCP 进程没有起来，模型自己结束回合，PhoneBridge 里没有这次调用，所以谈不上防重失败。
+
+同一种当前配置再跑一次三条只读工具：退出码 0，耗时 57.5 秒。`phone_status` 为 `driver: mock`，`intent_run` 的 `contacts.lookup` 返回 4 个合成联系人，`phone_inspect` 的 `messages` 长度为 0。三个调用的 server 都是 `phonebridge`。
+
+当前结论：在这台已登录的 Codex CLI 上，修正后的 inline MCP 配置可以稳定注入并调用只读工具。51 项主机链路仍由确定性客户端承担，没有把真实模型编排算进 `host_chain_passed`。
+
+### Hark 客户端
+
+本机表面、device link 和留给用户的一条合成任务写在 [Hark 接入](hark-codex.md)。没有新登录，没有改系统 SSH，没有连接真机，没有打开真实第三方 App，也没有发送真实消息。模拟器上的 4 项 XCUITest、G1、提交拦截和 G2 都在这次复核里重新跑过。
+
 ## 重跑自动测试
 
 从仓库根目录运行。
