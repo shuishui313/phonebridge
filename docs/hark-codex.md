@@ -69,53 +69,36 @@ Codex CLI 在 ChatGPT.app 内，版本 `codex-cli 0.167.0-alpha.3.2`，`codex lo
 
 这条路径证明：在当前命令形状下，真实 Codex 能发现并调用 PhoneBridge 的只读工具，结果能从 `codex exec --json` 读回。它不证明 Hark 窗口、不证明中断后的防重，也不证明可写提交。
 
-### 本机 Hark 表面
+### 更正：Hark 没有本机执行入口
 
-`/Applications/Hark.app` 的 bundle id 是 `com.harklabs.hark.mac`，短版本 `0.1.23`，可执行文件是 Tauri 壳 `hark-desktop`。二进制里有 `device_link`、`hark-device`、`This Mac`、`Computer` 和设备权限问答，会把本机工具以 MCP 帧交给 Hark 页面。没有 `OpenSSH`、`Remote Login` 或 `Codex` 这些字样。已启动的 iPhone 18 Pro Simulator 里没有 Hark。单实例套接字 `/tmp/com_harklabs_hark_mac_si.sock` 能连上，但 1 秒内没有协议横幅，不能把它当成 PhoneBridge 的 MCP。
+先前把 macOS 上已安装的应用列表（百度网盘、飞书、Grok Bot、Codex Computer Use.app 等）误写成 Hark 设置里的「设备控制和数据访问」开关，并让用户打开 Codex Computer Use、再把 `codex exec` 粘进 Hark 去本机执行。这个步骤作废。
 
-检查时应用已经停在既有登录会话里。视图菜单只有 Chat 和 Projects。设置里能看到用量、资料、定时任务、账户、钱包、系统偏好、安全、连接入口和关于；设置标签上的连接入口写成「建立这连」。其下的「设备控制和数据访问」列出本机集成开关，其中有 **Codex Computer Use** 和 **Cursor Computer Use**。设置项、视图菜单和二进制里都没有 SSH 或 Terminal 标签。这次没有拨动这两个开关，没有新登录，没有在输入框打字，没有发任何消息。系统 22 端口上已有 launchd 拉起的 `SSH-2.0-OpenSSH_10.3`。这次没有打开 Remote Login，也没有改 SSH 配置，更没有用该端口登录。
+Hark 确认过：它的命令跑在自己的云端沙箱里。Mac 版外壳目前只向这个沙箱开放设备权限，而且只有定位。Codex Computer Use 属于 Codex，Hark 打开它也得不到本机执行能力。Hark 能接 PhoneBridge 的方式是注册用户自己的远程 MCP（`streamable_http`），由云端来调用。
 
-### 留给用户的一步
+本机 Codex CLI 的只读注入仍然有效，那是 Codex 自己的进程，不是 Hark 窗口。
 
-要补上「从 Hark 窗口读回结果」，在已经打开的 Hark Mac 会话里发一条合成任务即可。不要新登录，不要开 Remote Login，不要连接真机，不要打开真实聊天或支付应用。
+### 第 1 步 · 本地回环只读 MCP（已实现）
 
-1. 在仓库根目录另开终端，只启动 Mock 只读后端：
-
-```sh
-PB_ROOT="$PWD"
-PB_PYTHON="$(command -v python3)"
-PB_MCP_DIR="$(mktemp -d /tmp/pb-hark.XXXXXX)"
-chmod 700 "$PB_MCP_DIR"
-echo "PB_MCP_DIR=$PB_MCP_DIR" >&2
-"$PB_PYTHON" -m phonebridge.cli --driver mock backend --socket "$PB_MCP_DIR/mcp.sock"
-```
-
-2. 后端会占住那个终端。另开一个终端，把目录指回仓库和上一步 `mktemp` 打印的路径，再打印 Codex 参数。它使用当前已登录的 Codex，不往 `~/.codex/config.toml` 写入服务器。
+独立进程 `python3 -m phonebridge.remote_readonly`。驱动在代码里固定为 Mock，这个入口没有 `--driver`，也不连接主后端的 Unix 套接字。它只注册 `phone_status`、`intent_run`、`phone_inspect`。`intent_run` 在服务端按能力 ID 白名单只放行 `contacts.lookup`，返回的联系人只含 `id` 和 `name`。监听地址只能是 `127.0.0.1`。令牌从环境变量读入后只保留 HMAC，请求必须带 `Authorization: Bearer`，URL 参数里的令牌一律拒绝。缺失、错误、过期三种失败返回同一个 401 和同一段 `unauthorized`。真实原因只进审计日志，日志不写令牌。带 `Origin` 时只接受本进程端口上的 `http://127.0.0.1` 和 `http://localhost`。这一步不开隧道、不对公网监听、不改系统设置。
 
 ```sh
-export PB_ROOT="/path/to/phonebridge"
-export PB_MCP_DIR="/tmp/pb-hark.XXXXXX"
-cd "$PB_ROOT"
-python3 - << 'PY'
-import os, shlex, sys
-from phonebridge.hark import build_codex_command, find_codex
-root = os.environ["PB_ROOT"]
-sock = os.environ["PB_MCP_DIR"] + "/mcp.sock"
-prompt = (
-    "Use ONLY the phonebridge MCP tools. Call phone_status once. "
-    "Call intent_run with capability contacts.lookup. Call phone_inspect once. "
-    "Do not change device state."
-)
-print(shlex.join(build_codex_command(
-    find_codex(None), sys.executable, root, sock, prompt, root, trusted_project=root)))
-PY
+export PB_REMOTE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+python3 -m phonebridge.remote_readonly \
+  --port 8765 --token-env PB_REMOTE_TOKEN --token-ttl-seconds 600 \
+  --audit-path /tmp/pb-remote-audit.jsonl
 ```
 
-在 Hark 菜单打开设置，进入「设备控制和数据访问」。若 **Codex Computer Use** 是关的，由你打开它。然后在 Chat 里把上面打印出的这一整行作为合成任务交给本机执行，并在同一条对话里读回结果。期望三次工具都属于 `phonebridge`，`phone_status` 的 `driver` 为 `mock`，`contacts.lookup` 读到合成联系人，`phone_inspect` 的 `messages` 仍为空。同一条命令在普通终端里已经跑通，见上一节。
+标准输出只有端口号。令牌不要写进命令行，也不要写进仓库。
 
-3. 如果打开开关后 Hark 仍不能在本机跑这条命令，就停在这一步。上面的 Codex CLI 只读注入已经是可复跑结果。不要为了凑 SSH 路径去打开 Remote Login。
+### 第 2 步 · 待评审，本轮不做
 
-这一步如果做成，证明的是：既有 Hark 会话能让本机 Codex 调用 PhoneBridge 只读工具，并把结果留在 Hark 对话里。它不证明系统 SSH、不证明 51 项里的丢回执防重、不证明真实消息发送。防重仍以 `--deterministic` 的 51 项为准。
+Hark 已确认可以注册 `streamable_http` 远程 MCP。开隧道之前要单独做安全评审，并得到用户批准。评审清单：
+
+- 地址必须是 HTTPS。URL 里不能带令牌。
+- 令牌放在 Hark 的安全保险箱，以 `Authorization: Bearer` 或 Hark 支持的自定义头注入。模型和沙箱看不到明文。
+- 令牌只注入到指定的隧道域名。临时隧道每次换域名都要重新注册。
+- 验证结束后，在 Hark 里删除该 MCP 和令牌，关掉隧道，并作废服务端令牌。
+- 第 2 步如果通过，证明的是 Hark 云端能经远程 MCP 只读调用 PhoneBridge 的 Mock。它不证明 Hark 能在本机执行命令，也不包含写操作和审批。写操作以后要不要走这条线，另开评审。
 
 ## Hark 现场第一步 · Mock 拟稿与只读回读
 
